@@ -69,8 +69,23 @@ Set it in one of three ways:
   }
   ```
 
-An empty value (`""`) goes back to the start folder. New sessions use the new
-value; running sessions pick it up with `/reload-plugins`.
+An empty value (`""`) goes back to the start folder.
+
+**The setting is global.** All three ways write it to your user settings
+(`~/.claude/settings.json`, under `pluginConfigs`), so it applies to every
+session in that environment, whichever folder it starts in:
+
+- New sessions use the new value right away.
+- Sessions that are already running pick it up with `/reload-plugins`.
+- It is one value for all projects. A different boundary per project or per
+  session is not possible yet (see [To do](#to-do)).
+- Like the installation itself, it applies only to the environment whose
+  `~/.claude` it was written to. WSL and native Windows on the same PC each
+  need their own setting.
+
+If `/plugin configure` answers *declares no userConfig options*, the running
+session still has a version older than 0.4.0 loaded: update the plugin, run
+`/reload-plugins`, and try again.
 
 ## Updates
 
@@ -290,6 +305,13 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - The update check sends one request a day to `raw.githubusercontent.com`.
 - This is a safety net, not a permission system. Use permission deny rules for
   a hard block, and backups for what matters.
+
+## To do
+
+- **Boundary per project and per session.** Today the `boundary` option is
+  one global value. Planned: a boundary per project (for example from the
+  project's `.claude/settings.json`) and one for the current session only
+  (for example a slash command), each overriding the global value.
 
 ## How it works
 
