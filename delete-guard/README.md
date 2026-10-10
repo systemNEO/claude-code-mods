@@ -1,76 +1,80 @@
 # delete-guard
 
-Claude-Code-Mod: **Löschen außerhalb des Projektordners nur mit deiner Zustimmung.**
+A Claude Code mod: **deleting anything outside the project folder requires your approval.**
 
-- Innerhalb des Ordners, in dem die Sitzung gestartet wurde, entscheidet Claude
-  wie gewohnt (Regeln und Modi bleiben unverändert, der Wächter mischt sich nicht ein).
-- Außerhalb, oder wo sich das Ziel nicht sicher bestimmen lässt, öffnet der
-  Wächter einen eigenen Dialog *Erlauben / Ablehnen*, und zwar **in jedem Modus**
-  (auch `auto`, `acceptEdits`, `bypassPermissions`), auch wenn eine Allow-Regel
-  wie `Bash(rm:*)` greift, und auch für Subagenten.
-- Wo niemand gefragt werden kann (`claude -p`, SDK), wird abgelehnt.
-- Freitext im Dialog („Andere“) gilt als Ablehnung und wird Claude als Begründung weitergereicht.
+- Inside the folder the session was started in, Claude decides as usual (rules
+  and permission modes are unchanged; the guard stays out of the way).
+- Outside of it, or wherever the target cannot be determined reliably, the
+  guard opens its own *Allow / Deny* dialog, **in every permission mode**
+  (including `auto`, `acceptEdits` and `bypassPermissions`), even when an allow
+  rule such as `Bash(rm:*)` matches, and for subagents too.
+- Where nobody can be asked (`claude -p`, the SDK), the call is denied.
+- Free text typed into the dialog ("Other") counts as a denial and is passed on
+  to Claude as the reason.
 
-## Was erkannt wird
+The dialog text is currently in German ("Erlauben" = allow, "Ablehnen" = deny).
 
-| Umgebung | Befehle |
+## What is detected
+
+| Environment | Commands |
 | --- | --- |
-| Bash (Linux, WSL, Git Bash) | `rm`, `rmdir`, `unlink`, `shred`, `trash`/`trash-put`, `gio trash`, `rimraf`, `find -delete` / `-exec rm`, `fd -x rm`, `xargs rm` (samt Quelle der Pipeline), `rsync --delete` / `--remove-source-files`, `git clean`, `git rm`, `git worktree remove`, `dd of=`, `mkfs`, `wipefs` |
-| PowerShell | `Remove-Item` und Aliase (`rm`, `ri`, `del`, `erase`, `rd`, `rmdir`), `-Path`/`-LiteralPath`/Arrays, Pipelines (`gci … \| Remove-Item`, `% { Remove-Item $_ }`), `.Delete()`, `[IO.File]::Delete`, `Remove-ItemProperty` (Registry), `Clear-RecycleBin`, `Invoke-Expression` |
-| cmd.exe | `del`, `erase`, `rd`, `rmdir`, auch hinter `if exist …` / `for … do` |
-| Verschachtelt | `sudo`, `env`, `timeout`, `nice`, `npx` …, `bash -c`, `sh -c '…' _ arg`, `eval`, Heredocs, `echo … \| bash`, `$(…)`, `powershell -Command` / `-EncodedCommand`, `cmd /c`, `wsl …` |
-| Inline-Code | `python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, `deno eval` mit Lösch-Aufrufen |
-| Skripte | `bash x.sh`, `./x.sh`, `source x.sh`, `.\x.ps1`, `x.cmd`: eine Ebene tief, wenn sie im Projekt oder in einem Temp-Ordner liegen |
-| MCP | Werkzeuge mit `delete`/`remove`/`unlink`/`rmdir`/`trash` im Namen und Pfad-Argumenten |
+| Bash (Linux, WSL, Git Bash) | `rm`, `rmdir`, `unlink`, `shred`, `trash`/`trash-put`, `gio trash`, `rimraf`, `find -delete` / `-exec rm`, `fd -x rm`, `xargs rm` (including the pipeline's source), `rsync --delete` / `--remove-source-files`, `git clean`, `git rm`, `git worktree remove`, `dd of=`, `mkfs`, `wipefs` |
+| PowerShell | `Remove-Item` and its aliases (`rm`, `ri`, `del`, `erase`, `rd`, `rmdir`), `-Path`/`-LiteralPath`/arrays, pipelines (`gci … \| Remove-Item`, `% { Remove-Item $_ }`), `.Delete()`, `[IO.File]::Delete`, `Remove-ItemProperty` (registry), `Clear-RecycleBin`, `Invoke-Expression` |
+| cmd.exe | `del`, `erase`, `rd`, `rmdir`, also behind `if exist …` / `for … do` |
+| Nested | `sudo`, `env`, `timeout`, `nice`, `npx` …, `bash -c`, `sh -c '…' _ arg`, `eval`, heredocs, `echo … \| bash`, `$(…)`, `powershell -Command` / `-EncodedCommand`, `cmd /c`, `wsl …` |
+| Inline code | `python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, `deno eval` containing delete calls |
+| Scripts | `bash x.sh`, `./x.sh`, `source x.sh`, `.\x.ps1`, `x.cmd`: one level deep, if they live in the project or in a temp folder |
+| MCP | tools with `delete`/`remove`/`unlink`/`rmdir`/`trash` in their name and path arguments |
 
-Pfade werden aufgelöst: `~`, `$HOME`, `$env:TEMP`, `%APPDATA%`, `cd` im Befehl,
-Variablen-Zuweisungen, `for`-Schleifen, Platzhalter (`../*` = Inhalt von `..`),
-`{a,b}`, `$(pwd)`, `$(dirname "$0")`, `Join-Path`. Symlinks werden dort aufgelöst,
-wo das Löschen ihnen folgt (`rm -rf link/` ja, `rm link` nein). Windows-Pfade
-werden ohne Groß/Klein-Unterschied verglichen; `C:\x`, `/c/x` (Git Bash) und
-`/mnt/c/x` (WSL) gelten als derselbe Ort. Den Projektordner selbst zu löschen
-gilt als „außerhalb“.
+Paths are resolved: `~`, `$HOME`, `$env:TEMP`, `%APPDATA%`, `cd` within the
+command, variable assignments, `for` loops, wildcards (`../*` = the contents of
+`..`), `{a,b}`, `$(pwd)`, `$(dirname "$0")`, `Join-Path`. Symlinks are resolved
+where the deletion follows them (`rm -rf link/` yes, `rm link` no). Windows
+paths are compared case-insensitively; `C:\x`, `/c/x` (Git Bash) and
+`/mnt/c/x` (WSL) count as the same location. Deleting the project folder
+itself counts as "outside".
 
-Unter Windows zeigt ein `\` oder `\*` am Pfadanfang auf die Wurzel des
-aktuellen Laufwerks (`Remove-Item \* -Recurse`, `rd /s /q \`, auch versehentlich
-als `Remove-Item build \*` oder `del /q build \*`). Das wird als `C:\` erkannt,
-ebenso `C:`, `C:*`, `$env:SystemDrive\*`, `%SystemDrive%\*`, `\\?\C:\`,
-`..\..\..\*` über die Wurzel hinaus und `rm -rf /*` in Git Bash. Ein Pfad gilt
-als außerhalb, sobald er wörtlich *oder* nach Auflösung von Symlinks außerhalb
-liegt; die Auflösung macht nie etwas zu „innerhalb“.
+On Windows, a leading `\` or `\*` points to the root of the current drive
+(`Remove-Item \* -Recurse`, `rd /s /q \`, or by accident as
+`Remove-Item build \*` or `del /q build \*`). This is recognized as `C:\`, as
+are `C:`, `C:*`, `$env:SystemDrive\*`, `%SystemDrive%\*`, `\\?\C:\`,
+`..\..\..\*` past the root, and `rm -rf /*` in Git Bash. A path counts as
+outside as soon as it lies outside either literally *or* after resolving
+symlinks; resolution never turns anything into "inside".
 
-Unbekanntes (eine Variable ohne Wert, `$(cat liste)`, `cat liste | xargs rm`,
-`Invoke-Expression $x`) zählt als „außerhalb“: lieber einmal zu viel gefragt.
+Anything unknown (a variable without a value, `$(cat list)`,
+`cat list | xargs rm`, `Invoke-Expression $x`) counts as outside: better to ask
+once too often.
 
-## Grenzen
+## Limitations
 
-Statische Analyse: Programme, die selbst löschen (ein Python-Skript als Datei,
-`make clean`, `npm run clean`), sieht der Wächter nicht; ebenso wenig Skripte
-außerhalb von Projekt und Temp-Ordnern. Verschieben (`mv`) gilt nicht als Löschen.
+This is static analysis: programs that delete on their own (a Python script
+file, `make clean`, `npm run clean`) are not seen, nor are scripts outside the
+project and temp folders. Moving (`mv`) does not count as deleting.
 
 ## Installation
 
-Auf jedem Rechner (Linux, macOS, Windows) im Terminal:
+On any machine (Linux, macOS, Windows), in a terminal:
 
 ```bash
 claude plugin marketplace add systemNEO/claude-code-mods
 claude plugin install delete-guard@claude-code-mods
 ```
 
-Die erste Zeile fügt dieses Repository als Marketplace hinzu, die zweite
-installiert die Mod für deinen Benutzer, also für alle Projekte und Sessions
-auf diesem Rechner. Unter Windows geht das genauso in PowerShell, cmd oder Git
-Bash; die Mod läuft in Claude Code selbst und braucht weder Node noch Python.
+The first line adds this repository as a marketplace, the second installs the
+mod for your user, i.e. for all projects and sessions on that machine. On
+Windows this works the same in PowerShell, cmd or Git Bash; the mod runs inside
+Claude Code itself and needs neither Node nor Python.
 
-Alternativ in einer laufenden Claude-Code-Session:
+Alternatively, inside a running Claude Code session:
 
 ```
 /plugin install delete-guard --marketplace systemNEO/claude-code-mods
 ```
 
-Bereits laufende Sessions übernehmen die Mod mit `/reload-plugins`.
+Sessions that are already running pick up the mod with `/reload-plugins`.
 
-Aktualisieren, deaktivieren, entfernen:
+Update, disable, remove:
 
 ```bash
 claude plugin marketplace update claude-code-mods
@@ -79,7 +83,7 @@ claude plugin disable delete-guard@claude-code-mods
 claude plugin uninstall delete-guard@claude-code-mods
 ```
 
-## Entwickeln
+## Development
 
 ```bash
 claude plugin validate .
