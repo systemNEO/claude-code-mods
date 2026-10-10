@@ -1,0 +1,12 @@
+{
+  "name": "claude-code-mods",
+  "description": "Claude-Code-Mods von systemNEO",
+  "owner": { "name": "systemNEO" },
+  "plugins": [
+    {
+      "name": "delete-guard",
+      "source": "./delete-guard",
+      "description": "Löschen außerhalb des Projektordners nur mit Zustimmung des Nutzers (Bash, PowerShell, cmd, Subagenten, MCP)."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "delete-guard",
+  "version": "0.1.0",
+  "description": "Löschen außerhalb des Projektordners nur mit Zustimmung des Nutzers (Bash, PowerShell, cmd, Subagenten).",
+  "author": {
+    "name": "systemNEO"
+  },
+  "homepage": "https://github.com/systemNEO/claude-code-mods/tree/main/delete-guard",
+  "repository": "https://github.com/systemNEO/claude-code-mods",
+  "license": "MIT"
+}
