@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { type Ctx, type Lang, lang, newOut, within } from '../hooks/common'
+import { type Ctx, type Lang, isNewer, lang, newOut, within } from '../hooks/common'
 import '../hooks/bash'
 import '../hooks/ps'
 
@@ -284,4 +284,18 @@ describe('cd, der nicht oder nur in einer eigenen Shell wirkt', () => {
   free('pushd sub && rm -rf x && popd && rm -rf y')
   free('Set-Location sub && Remove-Item ..\\build -Recurse', 'ps', WIN)
   free('X=1 | true; rm -rf build')
+})
+
+describe('Versionsvergleich für den Update-Hinweis', () => {
+  test('neuer', () => {
+    expect(isNewer('0.3.0', '0.2.0')).toBe(true)
+    expect(isNewer('1.10.0', '1.9.3')).toBe(true)
+    expect(isNewer('v1.0.0', '0.9.9')).toBe(true)
+    expect(isNewer('1.0.0', '1.0.0-beta')).toBe(true)
+  })
+  test('nicht neuer', () => {
+    expect(isNewer('0.2.0', '0.2.0')).toBe(false)
+    expect(isNewer('0.1.9', '0.2.0')).toBe(false)
+    expect(isNewer('1.0.0-beta', '1.0.0')).toBe(false)
+  })
 })

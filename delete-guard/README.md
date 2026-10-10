@@ -112,11 +112,53 @@ Alternatively, inside a running Claude Code session:
 
 Sessions that are already running pick up the mod with `/reload-plugins`.
 
-Update, disable, remove:
+## Updates
+
+**Update by hand** (on every machine that has the mod):
 
 ```bash
 claude plugin marketplace update claude-code-mods
 claude plugin update delete-guard@claude-code-mods
+```
+
+The first line fetches the current state of this repository, the second
+installs the newer version. Then run `/reload-plugins` in sessions that are
+already running (or restart them); new sessions load it automatically.
+
+**Update hint from the mod itself:** once a day, shortly after a session
+starts, delete-guard reads the version on GitHub. If it is newer than the
+installed one, it shows a notice with the two commands above. It never
+installs anything on its own: a deletion guard that silently loads new code
+would be a risk of its own. To turn the hint off, set
+`DELETE_GUARD_NO_UPDATE_CHECK=1` (it is also off with
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
+
+**Automatic updates by Claude Code:** Claude Code can keep a marketplace and
+its plugins up to date by itself. For marketplaces like this one it is off by
+default. To turn it on, open `/plugin` → *Marketplaces* → `claude-code-mods` →
+*Enable auto-update*, or add `"autoUpdate": true` to the marketplace entry in
+`~/.claude/settings.json`:
+
+```json
+"extraKnownMarketplaces": {
+  "claude-code-mods": {
+    "source": { "source": "github", "repo": "systemNEO/claude-code-mods" },
+    "autoUpdate": true
+  }
+}
+```
+
+Claude Code then checks in the background during a session and reports
+"Plugin updated … Run /reload-plugins to apply". Turning it on means new
+versions of this repository are installed without asking you each time.
+
+**For maintainers:** Claude Code installs a new copy only when the `version` in
+`.claude-plugin/plugin.json` changes. Bump it with every change you publish,
+otherwise `claude plugin update` reports "already at the latest version".
+
+## Disable or remove
+
+```bash
 claude plugin disable delete-guard@claude-code-mods
 claude plugin uninstall delete-guard@claude-code-mods
 ```
@@ -148,6 +190,8 @@ Cloud sessions on claude.ai do not run on your machine and are not covered.
   `allow` or `deny` with a reason Claude can act on.
 - `$.fs.stat(path, { resolve: true })` resolves symlinks; a path is outside if
   either the written or the resolved form is.
+- A `session.start` hook schedules the daily update check with `$.clock.after`,
+  so it never delays the start of a session; `$.store` remembers the last check.
 - The parsers for Bash, PowerShell and cmd (`hooks/bash.ts`, `hooks/ps.ts`) are
   pure functions without `$`, tested with about 200 cases in `tests/`.
   Nothing in the tests is executed; they only analyse command text.

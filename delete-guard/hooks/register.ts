@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import {
   type Ctx, type Lang, type Out, type State, type Target,
-  absolute, baseName, isWinPath, lang, newOut, normalizeRoot, parentOf, within,
+  absolute, baseName, isNewer, isWinPath, lang, newOut, normalizeRoot, parentOf, within,
 } from './common'
 import './bash'
 import './ps'
@@ -189,10 +189,62 @@ async function judgeMcp($: EngineInterface, e: Call, verdict: Verdict): Promise<
   return problems.length ? verdictOf($, e, problems, ctx.root, `Werkzeug: ${e.tool}`) : verdict
 }
 
+// ---------------------------------------------------------------- Update-Hinweis
+
+// Einmal am Tag beim Start einer Session die Version auf GitHub lesen und, wenn
+// sie neuer ist, einen Hinweis mit den Update-Befehlen zeigen. Installiert wird
+// nie von selbst: ein Löschschutz, der ungefragt Code nachlädt, wäre selbst ein
+// Risiko. Abschalten: DELETE_GUARD_NO_UPDATE_CHECK=1 (oder
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1).
+
+const REMOTE_MANIFEST = 'https://raw.githubusercontent.com/systemNEO/claude-code-mods/main/delete-guard/.claude-plugin/plugin.json'
+const CHECK_EVERY_MS = 24 * 60 * 60 * 1000
+const UPDATE_HINT = 'claude plugin marketplace update claude-code-mods && claude plugin update delete-guard@claude-code-mods'
+
+const versionOf = (text: unknown): string | undefined => {
+  try {
+    const v = (JSON.parse(String(text)) as { version?: unknown }).version
+    return typeof v === 'string' ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function checkForUpdate($: EngineInterface): Promise<void> {
+  const [optOut, quiet] = await Promise.all([
+    $.env.get('DELETE_GUARD_NO_UPDATE_CHECK'),
+    $.env.get('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'),
+  ])
+  if (optOut || quiet) return
+  const installed = versionOf(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))
+  if (!installed) return
+
+  const now = await $.clock.now()
+  const seen = (await $.store.get('update')) as { checkedAt?: number; latest?: string } | undefined
+  let latest = seen?.latest
+  if (!seen?.checkedAt || now - seen.checkedAt > CHECK_EVERY_MS) {
+    const res = await $.http.fetch(REMOTE_MANIFEST)
+    if (res.ok) latest = versionOf(res.text) ?? latest
+    await $.store.set('update', { checkedAt: now, latest })
+  }
+  if (latest && isNewer(latest, installed)) {
+    const text = `delete-guard ${latest} ist verfügbar (installiert: ${installed}). Aktualisieren mit: ${UPDATE_HINT}`
+    $.ui.toast(text, { timeoutMs: 15000 })
+    $.ui.log(text)
+  }
+}
+
 // tool.check ist die Rechteprüfung: sie läuft für jeden Aufruf, auch in
 // Subagenten, und ihr Urteil gilt unabhängig vom Modus. Schlägt die Prüfung
 // selbst fehl, wird abgelehnt statt durchgelassen.
 export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    const started = await next(e)
+    // Nicht den Start aufhalten: die Prüfung läuft kurz danach, Fehler bleiben still.
+    if (e.isInteractive) $.clock.after(3000, () => { checkForUpdate($).catch(() => {}) })
+    return started
+  })
+
   on('tool.check', { tool: /^(Bash|PowerShell|Monitor)$/ }, async ($, e, next) => judgeShell($, e, await next(e)))
     .catch(() => ({ decision: 'deny', reason: 'delete-guard: Prüfung fehlgeschlagen, Befehl vorsichtshalber abgelehnt.' }))
 

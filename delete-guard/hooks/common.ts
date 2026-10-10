@@ -247,3 +247,18 @@ export function decodeEncoded(b64: string): string | null {
     return null
   }
 }
+
+/** Ist Version `a` neuer als `b`? (`1.10.0` > `1.9.3`; Vorabversionen zählen als älter) */
+export function isNewer(a: string, b: string): boolean {
+  const parse = (v: string) => {
+    const [core = '', pre] = v.trim().replace(/^v/, '').split('-', 2)
+    return { nums: core.split('.').map(n => Number.parseInt(n, 10) || 0), pre: pre !== undefined }
+  }
+  const x = parse(a)
+  const y = parse(b)
+  for (let i = 0; i < Math.max(x.nums.length, y.nums.length); i++) {
+    const d = (x.nums[i] ?? 0) - (y.nums[i] ?? 0)
+    if (d !== 0) return d > 0
+  }
+  return !x.pre && y.pre
+}
