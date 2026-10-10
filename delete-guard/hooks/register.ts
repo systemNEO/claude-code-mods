@@ -193,30 +193,33 @@ type Verdict = { decision: 'allow' | 'ask' | 'deny'; reason?: string }
 type Call = { tool: string; input: unknown; tool_use_id?: string; agentId?: string }
 
 const HIGHER = 'Höher …'
-const ONCE = 'Nur dieses Mal'
+const LOWER = 'Tiefer …'
 
 /**
  * „Immer erlauben“, zweiter Schritt: welcher Ordner frei werden soll. Zur Wahl
- * stehen je zwei Stufen (der Ordner, sein Elternordner), „Höher …“ wandert
- * weiter hinauf, „Nur dieses Mal“ merkt nichts. Unter „Other“ lässt sich ein
- * eigener Pfad eintippen. Wurzeln werden nie angeboten.
+ * stehen je zwei Stufen (der Ordner, sein Elternordner); „Höher …“ und
+ * „Tiefer …“ wandern hinauf und wieder hinab. Unter „Other“ lässt sich ein
+ * eigener Pfad eintippen. Wurzeln werden nie angeboten. Gibt es nur einen
+ * Ordner, wird nicht gefragt; Esc schließt die Frage ohne zu speichern.
  */
 async function chooseFolder($: EngineInterface, start: string, ctx: Ctx): Promise<string | null> {
   const chain = ancestors(start)
-  for (let i = 0; i < chain.length; i += 2) {
+  if (chain.length <= 1) return chain[0] ?? null
+  let i = 0
+  for (;;) {
     const page = chain.slice(i, i + 2)
     const labels = page.map(f => asSetting(f, ctx))
-    const more = i + 2 < chain.length
+    const options = [...labels, ...(i + 2 < chain.length ? [HIGHER] : []), ...(i > 0 ? [LOWER] : [])]
     const question = `Welchen Ordner dauerhaft freigeben? Gelöscht wird in ${asSetting(start, ctx)}.\n` +
       'Je weiter oben, desto mehr ist künftig ohne Rückfrage löschbar. Unter „Other“ geht auch ein eigener Pfad.'
     let answer: string
     try {
-      answer = await $.ui.ask(question, { options: [...labels, ...(more ? [HIGHER] : []), ONCE], header: 'Freigeben' })
+      answer = await $.ui.ask(question, { options, header: 'Freigeben' })
     } catch {
       return null
     }
-    if (answer === HIGHER) continue
-    if (answer === ONCE) return null
+    if (answer === HIGHER) { i += 2; continue }
+    if (answer === LOWER) { i = Math.max(0, i - 2); continue }
     const picked = page[labels.indexOf(answer)]
     if (picked !== undefined) return picked
     const typed = resolveFolder(answer, ctx)
@@ -224,7 +227,6 @@ async function chooseFolder($: EngineInterface, start: string, ctx: Ctx): Promis
     $.ui.log(`${$.plugin.name}: „${answer}“ ist kein freigebbarer Ordner (absolut oder ~/…, keine Wurzel); nichts gespeichert.`)
     return null
   }
-  return null
 }
 
 /** Die Plugin-ID `name@marketplace`, aus dem Installationsordner (…/cache/<marketplace>/<name>/<version>). */

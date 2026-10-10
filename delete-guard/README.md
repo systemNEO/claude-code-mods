@@ -64,13 +64,14 @@ which folder to free for good:
 | The folder of the target, e.g. `/tmp/claude-1000/x` | That folder is added to `allowedFolders`. |
 | Its parent folder, e.g. `/tmp/claude-1000` | That folder is added instead (more is free from then on). |
 | *Höher …* (higher) | Shows the next two folders further up, until just below the root. |
-| *Nur dieses Mal* (just this once) | Nothing is saved; the call still runs. |
+| *Tiefer …* (lower) | Goes back down to the folders shown before. |
+| Esc (close the question) | Nothing is saved; the call still runs this once. |
 | *Other*: a path you type, e.g. `/tmp` | That folder is added, if it is absolute (or `~/…`) and not a root. |
 
 The root of a drive or file system (`/`, `C:\`, `\\server\share`) and registry
 paths are never offered and never saved, and *Immer erlauben* is not offered at
-all when a target could not be determined. Closing the second question still
-runs the call, without saving anything. Remove a folder again with
+all when a target could not be determined. When there is only one folder to
+choose from, it is saved without the second question. Remove a folder again with
 `/plugin configure delete-guard@claude-code-mods` or in `settings.json`.
 
 ### How to set the options
