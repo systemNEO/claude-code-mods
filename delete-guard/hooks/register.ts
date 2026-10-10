@@ -1,7 +1,8 @@
 import type { EngineInterface, Register } from 'claude-code'
 import {
   type Ctx, type Lang, type Out, type State, type Target,
-  absolute, baseName, isNewer, isWinPath, lang, newOut, normalizeRoot, parentOf, resolveBoundary, within,
+  absolute, asSetting, baseName, canRemember, collapse, folderFor, isFree, isNewer, isWinPath, lang, newOut,
+  normalizeRoot, parentOf, resolveBoundary, resolveFolders, within,
 } from './common'
 import './bash'
 import './ps'
@@ -18,6 +19,8 @@ const MAX_SCRIPT = 256 * 1024
 
 /** Die Option `boundary` (leer: Startordner der Session); gesetzt bei jedem Laden. */
 let boundaryOption = ''
+/** Die Option `allowedFolders`: weitere freie Ordner, wie in den Einstellungen geschrieben. */
+let allowedOption: readonly string[] = []
 
 async function context($: EngineInterface): Promise<{ ctx: Ctx; cwd: string }> {
   const [rootRaw, cwdRaw] = await Promise.all([$.session.root(), $.session.cwd()])
@@ -43,7 +46,11 @@ async function context($: EngineInterface): Promise<{ ctx: Ctx; cwd: string }> {
   const base: Ctx = { root, win, home: null, env: n => table[win ? n.toUpperCase() : n] }
   const homeRaw = HOME ?? USERPROFILE
   const withHome: Ctx = { ...base, home: homeRaw ? absolute(homeRaw, null, base, win) : null }
-  const ctx: Ctx = { ...withHome, root: resolveBoundary(boundaryOption, root, withHome) }
+  const ctx: Ctx = {
+    ...withHome,
+    root: resolveBoundary(boundaryOption, root, withHome),
+    allowed: resolveFolders(allowedOption, withHome),
+  }
   return { ctx, cwd: absolute(cwdRaw, null, ctx, win) ?? root }
 }
 
@@ -97,7 +104,13 @@ async function realPath($: EngineInterface, p: string, win: boolean): Promise<st
 }
 
 /** Liegt das Ziel außerhalb? Symlinks werden aufgelöst, wo das Löschen ihnen folgt. */
-async function outside($: EngineInterface, t: Target, ctx: Ctx, realRoot: string): Promise<boolean> {
+/** Grenze und freigegebene Ordner, nach Auflösung der Symlinks. */
+async function realFree($: EngineInterface, ctx: Ctx): Promise<string[]> {
+  const all = [ctx.root, ...(ctx.allowed ?? [])]
+  return (await Promise.all(all.map(f => realPath($, f, ctx.win)))).map((r, i) => r ?? all[i] ?? '')
+}
+
+async function outside($: EngineInterface, t: Target, ctx: Ctx, realRoots: readonly string[]): Promise<boolean> {
   const orEqual = t.mode === 'children'
   let real: string | undefined
   if (t.mode === 'exact' && !ctx.win) {
@@ -109,41 +122,68 @@ async function outside($: EngineInterface, t: Target, ctx: Ctx, realRoot: string
   // Außerhalb, sobald eine Sicht außerhalb liegt: der Pfad, wie er geschrieben
   // steht, oder wohin er aufgelöst führt. Die Auflösung macht nie etwas zu
   // „innerhalb“, was wörtlich außerhalb liegt.
-  if (!within(t.path, ctx.root, ctx.win, orEqual)) return true
-  return real !== undefined && !within(real, realRoot, ctx.win, orEqual) && !within(real, ctx.root, ctx.win, orEqual)
+  if (!isFree(t.path, orEqual, ctx)) return true
+  return real !== undefined && !isFree(real, orEqual, ctx, realRoots)
 }
 
 /** Alle Befunde zu einem Befehl: Ziele außerhalb und nicht bestimmbare. */
-async function findings($: EngineInterface, src: string, which: Lang): Promise<{ problems: string[]; root: string }> {
+type Findings = {
+  problems: string[]
+  ctx: Ctx
+  /** Ordner, die „Immer erlauben“ freigäbe; null, wo das nicht geht (Unbekanntes, Wurzeln). */
+  remember: string[] | null
+}
+
+/** Ordner für „Immer erlauben“ aus den Zielen außerhalb. */
+function rememberFor(outsideTargets: readonly Target[], unknowns: number, ctx: Ctx): string[] | null {
+  if (unknowns > 0 || outsideTargets.length === 0) return null
+  const folders = collapse(outsideTargets.map(folderFor), ctx.win)
+  return folders.every(canRemember) ? folders : null
+}
+
+async function findings($: EngineInterface, src: string, which: Lang): Promise<Findings> {
   const { ctx, cwd } = await context($)
   const out = analyze(src, which, cwd, ctx)
   await followScripts($, out, cwd, ctx)
-  const realRoot = (await realPath($, ctx.root, ctx.win)) ?? ctx.root
+  const realRoots = await realFree($, ctx)
   const problems: string[] = []
+  const outsideTargets: Target[] = []
   const seen = new Set<string>()
   for (const t of out.targets) {
     const k = `${t.mode} ${t.path}`
     if (seen.has(k)) continue
     seen.add(k)
-    if (await outside($, t, ctx, realRoot))
+    if (await outside($, t, ctx, realRoots)) {
+      outsideTargets.push(t)
       problems.push(`${t.via}: ${t.path}${t.mode === 'children' ? ' (Inhalt)' : ''}${t.path === ctx.root ? ' — der Projektordner selbst' : ''}`)
+    }
   }
-  for (const u of new Set(out.unknowns)) problems.push(u)
-  return { problems, root: ctx.root }
+  const unknowns = [...new Set(out.unknowns)]
+  problems.push(...unknowns)
+  return { problems, ctx, remember: rememberFor(outsideTargets, unknowns.length, ctx) }
 }
 
 const shorten = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 /** Den Nutzer fragen; true nur bei ausdrücklicher Zustimmung. */
-async function consent($: EngineInterface, what: string, problems: string[], root: string, agentId?: string): Promise<true | string> {
+const ALLOW = 'Erlauben'
+const ALWAYS = 'Immer erlauben'
+const DENY = 'Ablehnen'
+
+async function consent($: EngineInterface, what: string, f: Findings, agentId?: string): Promise<true | 'always' | string> {
+  const { problems, ctx, remember } = f
   const list = problems.slice(0, 8).map(p => `• ${shorten(p, 160)}`).join('\n')
   const more = problems.length > 8 ? `\n• … und ${problems.length - 8} weitere` : ''
   const who = agentId ? 'Ein Subagent will' : 'Claude will'
-  const question = `${who} außerhalb von ${root} löschen (oder das Ziel ist nicht eindeutig):\n${list}${more}\n\n${shorten(what, 400)}\n\nErlauben?`
+  const always = remember
+    ? `\n\n„${ALWAYS}“ gibt dauerhaft frei: ${remember.map(r => asSetting(r, ctx)).join(', ')}`
+    : ''
+  const question = `${who} außerhalb von ${ctx.root} löschen (oder das Ziel ist nicht eindeutig):\n${list}${more}\n\n${shorten(what, 400)}${always}\n\nErlauben?`
   try {
-    const answer = await $.ui.ask(question, { options: ['Erlauben', 'Ablehnen'], header: 'Löschen' })
-    if (answer === 'Erlauben') return true
-    return answer === 'Ablehnen' ? 'Der Nutzer hat das Löschen außerhalb des Projektordners abgelehnt.' : `Der Nutzer hat nicht zugestimmt und schreibt: ${answer}`
+    const answer = await $.ui.ask(question, { options: remember ? [ALLOW, ALWAYS, DENY] : [ALLOW, DENY], header: 'Löschen' })
+    if (answer === ALLOW) return true
+    if (answer === ALWAYS && remember) return 'always'
+    return answer === DENY ? 'Der Nutzer hat das Löschen außerhalb des Projektordners abgelehnt.' : `Der Nutzer hat nicht zugestimmt und schreibt: ${answer}`
   } catch {
     return 'Löschen außerhalb des Projektordners braucht die Zustimmung des Nutzers, und es konnte niemand gefragt werden.'
   }
@@ -152,10 +192,24 @@ async function consent($: EngineInterface, what: string, problems: string[], roo
 type Verdict = { decision: 'allow' | 'ask' | 'deny'; reason?: string }
 type Call = { tool: string; input: unknown; tool_use_id?: string; agentId?: string }
 
-const verdictOf = async ($: EngineInterface, e: Call, problems: string[], root: string, what: string): Promise<Verdict> => {
-  if (e.tool_use_id === undefined) return { decision: 'ask', reason: `${$.plugin.name}: Löschen außerhalb von ${root}: ${problems.join('; ')}` }
-  const ok = await consent($, what, problems, root, e.agentId)
-  return ok === true
+/** „Immer erlauben“: die Ordner an die Option `allowedFolders` anhängen. */
+async function remember($: EngineInterface, folders: readonly string[], ctx: Ctx): Promise<void> {
+  const value = [...new Set([...allowedOption, ...folders.map(f => asSetting(f, ctx))])]
+  try {
+    const r = await $.config.set({ key: `${$.plugin.name}.allowedFolders`, value })
+    if (r.deny !== undefined) throw new Error(r.deny)
+    allowedOption = value
+    $.ui.toast(`${$.plugin.name}: dauerhaft frei: ${folders.map(f => asSetting(f, ctx)).join(', ')}`)
+  } catch (err) {
+    $.ui.log(`${$.plugin.name}: Ordner konnte nicht gespeichert werden (${String(err)}); dieses Mal erlaubt.`)
+  }
+}
+
+const verdictOf = async ($: EngineInterface, e: Call, f: Findings, what: string): Promise<Verdict> => {
+  if (e.tool_use_id === undefined) return { decision: 'ask', reason: `${$.plugin.name}: Löschen außerhalb von ${f.ctx.root}: ${f.problems.join('; ')}` }
+  const ok = await consent($, what, f, e.agentId)
+  if (ok === 'always' && f.remember) await remember($, f.remember, f.ctx)
+  return ok === true || ok === 'always'
     ? { decision: 'allow', reason: `${$.plugin.name}: vom Nutzer genehmigt` }
     : { decision: 'deny', reason: `${$.plugin.name}: ${ok}` }
 }
@@ -164,8 +218,8 @@ const verdictOf = async ($: EngineInterface, e: Call, problems: string[], root: 
 async function judgeShell($: EngineInterface, e: Call, verdict: Verdict): Promise<Verdict> {
   const command = (e.input as { command?: unknown } | null)?.command
   if (typeof command !== 'string' || verdict.decision === 'deny') return verdict
-  const { problems, root } = await findings($, command, e.tool === 'PowerShell' ? 'ps' : 'bash')
-  return problems.length ? verdictOf($, e, problems, root, `Befehl: ${command}`) : verdict
+  const f = await findings($, command, e.tool === 'PowerShell' ? 'ps' : 'bash')
+  return f.problems.length ? verdictOf($, e, f, `Befehl: ${command}`) : verdict
 }
 
 /**
@@ -183,14 +237,18 @@ async function judgeMcp($: EngineInterface, e: Call, verdict: Verdict): Promise<
   collect(e.input, '')
   if (!paths.length) return verdict
   const { ctx, cwd } = await context($)
-  const realRoot = (await realPath($, ctx.root, ctx.win)) ?? ctx.root
+  const realRoots = await realFree($, ctx)
   const problems: string[] = []
+  const outsideTargets: Target[] = []
+  let unknowns = 0
   for (const p of paths) {
     const abs = absolute(p.startsWith('~') && ctx.home ? ctx.home + p.slice(1) : p, cwd, ctx, ctx.win)
-    if (abs === null) problems.push(`${e.tool}: ${p}`)
-    else if (await outside($, { path: abs, mode: 'deep', via: e.tool }, ctx, realRoot)) problems.push(`${e.tool}: ${abs}`)
+    const t: Target | null = abs === null ? null : { path: abs, mode: 'deep', via: e.tool }
+    if (t === null) { unknowns++; problems.push(`${e.tool}: ${p}`) }
+    else if (await outside($, t, ctx, realRoots)) { outsideTargets.push(t); problems.push(`${e.tool}: ${t.path}`) }
   }
-  return problems.length ? verdictOf($, e, problems, ctx.root, `Werkzeug: ${e.tool}`) : verdict
+  const f: Findings = { problems, ctx, remember: rememberFor(outsideTargets, unknowns, ctx) }
+  return problems.length ? verdictOf($, e, f, `Werkzeug: ${e.tool}`) : verdict
 }
 
 // ---------------------------------------------------------------- Update-Hinweis
@@ -243,6 +301,10 @@ async function checkForUpdate($: EngineInterface): Promise<void> {
 // selbst fehl, wird abgelehnt statt durchgelassen.
 export const register: Register = (on, options) => {
   boundaryOption = typeof options.boundary === 'string' ? options.boundary : ''
+  const allowed = options.allowedFolders
+  allowedOption = Array.isArray(allowed) ? allowed.filter((x): x is string => typeof x === 'string')
+    : typeof allowed === 'string' && allowed.trim() ? allowed.split(/[;\n]/).map(x => x.trim()).filter(Boolean)
+    : []
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)

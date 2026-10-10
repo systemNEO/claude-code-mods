@@ -13,6 +13,8 @@ export type Ctx = {
   home: string | null
   /** Umgebungsvariable lesen (unter Windows ohne Groß/Klein-Unterschied). */
   env: (name: string) => string | undefined
+  /** Weitere freie Ordner (Option `allowedFolders`), absolut und gefaltet. */
+  allowed?: string[]
 }
 
 /**
@@ -268,10 +270,60 @@ export function isNewer(a: string, b: string): boolean {
  * Leer, relativ oder nicht auflösbar: der Startordner der Session.
  */
 export function resolveBoundary(option: string, sessionRoot: string, ctx: Ctx): string {
+  return resolveFolder(option, ctx) ?? sessionRoot
+}
+
+/** Ein Ordner aus den Optionen: absolut oder `~`, `~/…`; sonst null. */
+export function resolveFolder(option: string, ctx: Ctx): string | null {
   const o = option.trim().replace(/^["']|["']$/g, '')
-  if (o === '') return sessionRoot
+  if (o === '') return null
   const tilde = o === '~' || /^~[\\/]/.test(o)
-  if (tilde && !ctx.home) return sessionRoot
+  if (tilde && !ctx.home) return null
   const expanded = tilde ? `${ctx.home}${o.slice(1)}` : o
-  return absolute(expanded, null, ctx, ctx.win) ?? sessionRoot
+  return absolute(expanded, null, ctx, ctx.win)
+}
+
+/** Die Option `allowedFolders`, aufgelöst; Unbrauchbares fällt weg. */
+export function resolveFolders(list: readonly string[], ctx: Ctx): string[] {
+  return list.flatMap(f => {
+    const r = resolveFolder(f, ctx)
+    return r === null ? [] : [r]
+  })
+}
+
+/**
+ * Liegt `p` im freien Bereich: in der Grenze oder einem freigegebenen Ordner?
+ * Der Ordner selbst zählt nur bei `orEqual` (sein Inhalt wird gelöscht, nicht er).
+ */
+export function isFree(p: string, orEqual: boolean, ctx: Ctx, also: readonly string[] = []): boolean {
+  return [ctx.root, ...(ctx.allowed ?? []), ...also].some(r => within(p, r, ctx.win, orEqual))
+}
+
+/** Welchen Ordner „Immer erlauben“ für ein Ziel freigibt: seinen Ordner. */
+export const folderFor = (t: Target): string => (t.mode === 'children' ? t.path : parentOf(t.path))
+
+/**
+ * Darf ein Ordner dauerhaft freigegeben werden? Nie eine Wurzel (`/`, `C:/`,
+ * `//server/share`) oder ein Provider-Pfad (`HKLM:/…`): das schaltete den
+ * Schutz praktisch ab.
+ */
+export function canRemember(folder: string): boolean {
+  if (folder === '/' || /^[A-Za-z]:\/?$/.test(folder)) return false
+  if (/^\/\/[^/]+(\/[^/]+)?\/?$/.test(folder)) return false
+  if (/^[A-Za-z][A-Za-z0-9.]+:/.test(folder)) return false
+  return folder.startsWith('/') || /^[A-Za-z]:\//.test(folder)
+}
+
+/** Ordner zusammenfassen: doppelte und in anderen enthaltene fallen weg. */
+export function collapse(folders: readonly string[], win: boolean): string[] {
+  const sorted = [...new Set(folders)].sort((a, b) => a.length - b.length)
+  const out: string[] = []
+  for (const f of sorted) if (!out.some(o => within(f, o, win, true))) out.push(f)
+  return out
+}
+
+/** So steht ein Ordner in den Einstellungen: unter dem Heimatordner als `~/…`. */
+export function asSetting(folder: string, ctx: Ctx): string {
+  if (ctx.home && within(folder, ctx.home, ctx.win, false)) return `~${folder.slice(ctx.home.replace(/\/$/, '').length)}`
+  return folder
 }

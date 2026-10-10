@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { type Ctx, type Lang, isNewer, lang, newOut, resolveBoundary, within } from '../hooks/common'
+import { type Ctx, type Lang, asSetting, canRemember, collapse, folderFor, isFree, isNewer, lang, newOut, resolveBoundary, resolveFolders, within } from '../hooks/common'
 import '../hooks/bash'
 import '../hooks/ps'
 
@@ -320,5 +320,42 @@ describe('Option boundary', () => {
   test('Windows: ~\\projects und C:\\…', () => {
     expect(resolveBoundary('~\\projects', 'C:/Users/u/proj', WIN)).toBe('C:/Users/u/projects')
     expect(resolveBoundary('C:\\Users\\u\\projects', 'C:/Users/u/proj', WIN)).toBe('C:/Users/u/projects')
+  })
+})
+
+describe('Freigegebene Ordner (allowedFolders)', () => {
+  const ctx = { ...LINUX, allowed: resolveFolders(['/tmp', '~/Downloads', 'relativ', ''], LINUX) }
+  test('auflösen: ~ und absolut, Relatives fällt weg', () => { expect(ctx.allowed).toEqual(['/tmp', '/home/u/Downloads']) })
+  test('darin frei, der Ordner selbst nicht', () => {
+    expect(isFree('/tmp/x', false, ctx)).toBe(true)
+    expect(isFree('/home/u/Downloads/a.zip', false, ctx)).toBe(true)
+    expect(isFree('/tmp', false, ctx)).toBe(false)
+    expect(isFree('/tmp', true, ctx)).toBe(true)
+    expect(isFree('/etc/x', false, ctx)).toBe(false)
+    expect(isFree('/tmpfoo/x', false, ctx)).toBe(false)
+  })
+  test('Windows: ohne Groß/Klein-Unterschied', () => {
+    const w = { ...WIN, allowed: resolveFolders(['C:\\Temp', '~\\Downloads'], WIN) }
+    expect(w.allowed).toEqual(['C:/Temp', 'C:/Users/u/Downloads'])
+    expect(isFree('c:/temp/x', false, w)).toBe(true)
+    expect(isFree('C:/Users/u/downloads/x', false, w)).toBe(true)
+  })
+  test('welcher Ordner bei „Immer erlauben“', () => {
+    expect(folderFor({ path: '/tmp/build', mode: 'deep', via: 'rm' })).toBe('/tmp')
+    expect(folderFor({ path: '/tmp/a.txt', mode: 'exact', via: 'rm' })).toBe('/tmp')
+    expect(folderFor({ path: '/tmp/cache', mode: 'children', via: 'rm' })).toBe('/tmp/cache')
+  })
+  test('nie eine Wurzel oder einen Provider-Pfad', () => {
+    for (const f of ['/', 'C:/', 'D:', '//server/share', '//server', 'HKLM:/Software']) expect({ f, ok: canRemember(f) }).toEqual({ f, ok: false })
+    for (const f of ['/tmp', '/home/u', 'C:/Temp', '//server/share/x']) expect({ f, ok: canRemember(f) }).toEqual({ f, ok: true })
+  })
+  test('zusammenfassen', () => {
+    expect(collapse(['/tmp/a', '/tmp', '/tmp', '/var/x'], false)).toEqual(['/tmp', '/var/x'])
+    expect(collapse(['C:/Temp/a', 'c:/temp'], true)).toEqual(['c:/temp'])
+  })
+  test('in den Einstellungen unter ~ als ~/…', () => {
+    expect(asSetting('/home/u/Downloads', LINUX)).toBe('~/Downloads')
+    expect(asSetting('/tmp', LINUX)).toBe('/tmp')
+    expect(asSetting('C:/Users/u/Downloads', WIN)).toBe('~/Downloads')
   })
 })

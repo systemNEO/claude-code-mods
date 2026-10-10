@@ -1,6 +1,6 @@
 {
   "name": "delete-guard",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Deleting outside the project folder requires the user's approval (Bash, PowerShell, cmd, subagents, MCP).",
   "author": {
     "name": "systemNEO"
@@ -14,6 +14,13 @@
       "title": "Boundary folder",
       "description": "Folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or ~ for your home folder, e.g. ~ or ~/projects (Windows: ~\\projects or C:\\Users\\you\\projects).",
       "default": ""
+    },
+    "allowedFolders": {
+      "type": "string",
+      "multiple": true,
+      "title": "Allowed folders",
+      "description": "More folders inside which deleting needs no approval, in addition to the boundary, e.g. /tmp or ~/Downloads. An absolute path or ~/…. \"Immer erlauben\" (always allow) in the dialog adds folders here.",
+      "default": []
     }
   }
 }
