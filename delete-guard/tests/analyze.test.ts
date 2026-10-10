@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { type Ctx, type Lang, asSetting, canRemember, collapse, folderFor, isFree, isNewer, lang, newOut, resolveBoundary, resolveFolders, within } from '../hooks/common'
+import { type Ctx, type Lang, ancestors, asSetting, canRemember, splitFolders, collapse, folderFor, isFree, isNewer, lang, newOut, resolveBoundary, resolveFolders, within } from '../hooks/common'
 import '../hooks/bash'
 import '../hooks/ps'
 
@@ -357,5 +357,19 @@ describe('Freigegebene Ordner (allowedFolders)', () => {
     expect(asSetting('/home/u/Downloads', LINUX)).toBe('~/Downloads')
     expect(asSetting('/tmp', LINUX)).toBe('/tmp')
     expect(asSetting('C:/Users/u/Downloads', WIN)).toBe('~/Downloads')
+  })
+})
+
+describe('Hochwandern und Listenformat', () => {
+  test('ancestors bis unter die Wurzel', () => {
+    expect(ancestors('/tmp/claude-1000/x/scratchpad')).toEqual(['/tmp/claude-1000/x/scratchpad', '/tmp/claude-1000/x', '/tmp/claude-1000', '/tmp'])
+    expect(ancestors('C:/Users/u/AppData/Local/Temp')).toEqual(['C:/Users/u/AppData/Local/Temp', 'C:/Users/u/AppData/Local', 'C:/Users/u/AppData', 'C:/Users/u', 'C:/Users'])
+    expect(ancestors('/')).toEqual([])
+  })
+  test('splitFolders: Liste, Kommas, Semikolons, Zeilen', () => {
+    expect(splitFolders(['/tmp', ' ~/a '])).toEqual(['/tmp', '~/a'])
+    expect(splitFolders('/tmp, ~/dg-b;C:\\Temp\n/var/x')).toEqual(['/tmp', '~/dg-b', 'C:\\Temp', '/var/x'])
+    expect(splitFolders('')).toEqual([])
+    expect(splitFolders(undefined)).toEqual([])
   })
 })

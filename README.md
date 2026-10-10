@@ -49,7 +49,9 @@ echo '{"boundary": "~/projects"}' | claude plugin configure delete-guard@claude-
 
 or, inside Claude Code, `/plugin configure delete-guard@claude-code-mods`.
 `claude plugin configure delete-guard@claude-code-mods` shows the current
-value; `{"boundary": ""}` goes back to the start folder. The setting is
+value; `{"boundary": ""}` goes back to the start folder. More free folders,
+such as `/tmp`, go into `allowedFolders` (`{"allowedFolders": "/tmp, ~/Downloads"}`),
+or are added from the dialog with *Immer erlauben*. The setting is
 global: it is saved in `~/.claude/settings.json` and applies to every session
 on the machine (running sessions after `/reload-plugins`). Details in
 [delete-guard → Configuration](delete-guard/README.md#configuration).

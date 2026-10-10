@@ -40,6 +40,7 @@ Sessions that are already running pick up the mod with `/reload-plugins`.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `boundary` | empty | The folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or `~` for your home folder, e.g. `~`, `~/projects`, `/srv/work`; on Windows `~\projects` or `C:\Users\you\projects`. |
+| `allowedFolders` | empty | More folders inside which deleting needs no approval, **in addition** to the boundary, e.g. `/tmp`, `~/Downloads`; on Windows `C:\Temp`, `~\Downloads`. Separate several with commas. *Immer erlauben* in the dialog adds folders here (see below). |
 
 The boundary **replaces** the start folder; it does not add to it. With
 `~/projects`, a session started in `~/projects/app` may delete anywhere in
@@ -48,14 +49,43 @@ files. The boundary folder itself, like the start folder, counts as outside:
 deleting `~` with the boundary `~` asks. A relative path (`projects`) or a `~`
 that cannot be resolved is ignored and the start folder applies.
 
-Set it in one of three ways:
+Both options work the same way inside: everything *below* the folder is free,
+the folder itself is not (deleting `/tmp` itself asks even with `/tmp` in
+`allowedFolders`). Relative paths are ignored.
+
+### Allow a folder from the dialog
+
+When every target of a call is a known path outside, the dialog offers a third
+choice, **Immer erlauben** (always allow). It lets the call run and then asks
+which folder to free for good:
+
+| Choice | What happens |
+| --- | --- |
+| The folder of the target, e.g. `/tmp/claude-1000/x` | That folder is added to `allowedFolders`. |
+| Its parent folder, e.g. `/tmp/claude-1000` | That folder is added instead (more is free from then on). |
+| *Höher …* (higher) | Shows the next two folders further up, until just below the root. |
+| *Nur dieses Mal* (just this once) | Nothing is saved; the call still runs. |
+| *Other*: a path you type, e.g. `/tmp` | That folder is added, if it is absolute (or `~/…`) and not a root. |
+
+The root of a drive or file system (`/`, `C:\`, `\\server\share`) and registry
+paths are never offered and never saved, and *Immer erlauben* is not offered at
+all when a target could not be determined. Closing the second question still
+runs the call, without saving anything. Remove a folder again with
+`/plugin configure delete-guard@claude-code-mods` or in `settings.json`.
+
+### How to set the options
+
+Set them in one of three ways:
 
 - In Claude Code: `/plugin configure delete-guard@claude-code-mods`.
 - In a terminal:
 
   ```bash
   echo '{"boundary": "~/projects"}' | claude plugin configure delete-guard@claude-code-mods --values-stdin
+  echo '{"allowedFolders": "/tmp, ~/Downloads"}' | claude plugin configure delete-guard@claude-code-mods --values-stdin
   ```
+
+  The second line *replaces* the list; options left out keep their values.
 
   The same line works in PowerShell. In cmd, leave out the single quotes:
   `echo {"boundary": "~\\projects"} | claude plugin configure delete-guard@claude-code-mods --values-stdin`.
@@ -65,7 +95,7 @@ Set it in one of three ways:
 
   ```json
   "pluginConfigs": {
-    "delete-guard@claude-code-mods": { "options": { "boundary": "~/projects" } }
+    "delete-guard@claude-code-mods": { "options": { "boundary": "~/projects", "allowedFolders": "/tmp, ~/Downloads" } }
   }
   ```
 
@@ -179,6 +209,8 @@ started in, or the folder set in [Configuration](#configuration).
 | The usual rules already deny the call | Stays denied, no dialog. |
 | Subagents | Same rules. The dialog says a subagent wants to delete. |
 | *Erlauben* | The call runs, without a second permission prompt. |
+| *Immer erlauben* | The call runs, and you pick a folder (the target's folder or one above it) that is free from then on; see [Allow a folder from the dialog](#allow-a-folder-from-the-dialog). |
+| A target lies in a folder from `allowedFolders` | Like inside the start folder: no dialog. |
 | *Ablehnen* | The call is refused; Claude is told the user denied it. |
 | Free text typed into the dialog ("Other") | Counts as a denial; the text is passed on to Claude as the reason. |
 | Nobody can be asked (`claude -p`, the SDK, dialog dismissed) | Denied. |
@@ -287,6 +319,9 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 
 **The dialog**
 
+- A folder freed with *Immer erlauben* or in `allowedFolders` stays free in
+  every session until you remove it. Freeing a high folder (`~`, `/tmp`)
+  frees everything below it.
 - The dialog text is in German. It lists up to eight findings (with a count
   of the rest) and shows the command cut to 400 characters.
 - Allowing runs the whole command as written, not just the deleting part. It
@@ -324,7 +359,7 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - A `session.start` hook schedules the daily update check with `$.clock.after`,
   so it never delays the start of a session; `$.store` remembers the last check.
 - The parsers for Bash, PowerShell and cmd (`hooks/bash.ts`, `hooks/ps.ts`) are
-  pure functions without `$`, tested with about 210 cases in `tests/`.
+  pure functions without `$`, tested with about 230 cases in `tests/`.
   Nothing in the tests is executed; they only analyse command text.
 
 ## Development

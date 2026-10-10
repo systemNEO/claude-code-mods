@@ -1,6 +1,6 @@
 {
   "name": "delete-guard",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Deleting outside the project folder requires the user's approval (Bash, PowerShell, cmd, subagents, MCP).",
   "author": {
     "name": "systemNEO"

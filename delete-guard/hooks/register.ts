@@ -2,7 +2,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import {
   type Ctx, type Lang, type Out, type State, type Target,
   absolute, asSetting, baseName, canRemember, collapse, folderFor, isFree, isNewer, isWinPath, lang, newOut,
-  normalizeRoot, parentOf, resolveBoundary, resolveFolders, within,
+  ancestors, normalizeRoot, parentOf, resolveBoundary, resolveFolder, resolveFolders, splitFolders, within,
 } from './common'
 import './bash'
 import './ps'
@@ -176,7 +176,7 @@ async function consent($: EngineInterface, what: string, f: Findings, agentId?: 
   const more = problems.length > 8 ? `\n• … und ${problems.length - 8} weitere` : ''
   const who = agentId ? 'Ein Subagent will' : 'Claude will'
   const always = remember
-    ? `\n\n„${ALWAYS}“ gibt dauerhaft frei: ${remember.map(r => asSetting(r, ctx)).join(', ')}`
+    ? `\n\n„${ALWAYS}“ erlaubt es jetzt und lässt dich danach wählen, welcher Ordner dauerhaft frei wird (ab ${remember.map(r => asSetting(r, ctx)).join(', ')} aufwärts).`
     : ''
   const question = `${who} außerhalb von ${ctx.root} löschen (oder das Ziel ist nicht eindeutig):\n${list}${more}\n\n${shorten(what, 400)}${always}\n\nErlauben?`
   try {
@@ -192,11 +192,49 @@ async function consent($: EngineInterface, what: string, f: Findings, agentId?: 
 type Verdict = { decision: 'allow' | 'ask' | 'deny'; reason?: string }
 type Call = { tool: string; input: unknown; tool_use_id?: string; agentId?: string }
 
+const HIGHER = 'Höher …'
+const ONCE = 'Nur dieses Mal'
+
+/**
+ * „Immer erlauben“, zweiter Schritt: welcher Ordner frei werden soll. Zur Wahl
+ * stehen je zwei Stufen (der Ordner, sein Elternordner), „Höher …“ wandert
+ * weiter hinauf, „Nur dieses Mal“ merkt nichts. Unter „Other“ lässt sich ein
+ * eigener Pfad eintippen. Wurzeln werden nie angeboten.
+ */
+async function chooseFolder($: EngineInterface, start: string, ctx: Ctx): Promise<string | null> {
+  const chain = ancestors(start)
+  for (let i = 0; i < chain.length; i += 2) {
+    const page = chain.slice(i, i + 2)
+    const labels = page.map(f => asSetting(f, ctx))
+    const more = i + 2 < chain.length
+    const question = `Welchen Ordner dauerhaft freigeben? Gelöscht wird in ${asSetting(start, ctx)}.\n` +
+      'Je weiter oben, desto mehr ist künftig ohne Rückfrage löschbar. Unter „Other“ geht auch ein eigener Pfad.'
+    let answer: string
+    try {
+      answer = await $.ui.ask(question, { options: [...labels, ...(more ? [HIGHER] : []), ONCE], header: 'Freigeben' })
+    } catch {
+      return null
+    }
+    if (answer === HIGHER) continue
+    if (answer === ONCE) return null
+    const picked = page[labels.indexOf(answer)]
+    if (picked !== undefined) return picked
+    const typed = resolveFolder(answer, ctx)
+    if (typed !== null && canRemember(typed)) return typed
+    $.ui.log(`${$.plugin.name}: „${answer}“ ist kein freigebbarer Ordner (absolut oder ~/…, keine Wurzel); nichts gespeichert.`)
+    return null
+  }
+  return null
+}
+
 /** „Immer erlauben“: die Ordner an die Option `allowedFolders` anhängen. */
 async function remember($: EngineInterface, folders: readonly string[], ctx: Ctx): Promise<void> {
   const value = [...new Set([...allowedOption, ...folders.map(f => asSetting(f, ctx))])]
   try {
-    const r = await $.config.set({ key: `${$.plugin.name}.allowedFolders`, value })
+    const key = `${$.plugin.name}.allowedFolders`
+    // Als Liste; wo der Wert nur Text nimmt (so speichert ihn die Kommandozeile), mit Kommas.
+    let r = await $.config.set({ key, value })
+    if (r.deny !== undefined) r = await $.config.set({ key, value: value.join(', ') })
     if (r.deny !== undefined) throw new Error(r.deny)
     allowedOption = value
     $.ui.toast(`${$.plugin.name}: dauerhaft frei: ${folders.map(f => asSetting(f, ctx)).join(', ')}`)
@@ -208,7 +246,14 @@ async function remember($: EngineInterface, folders: readonly string[], ctx: Ctx
 const verdictOf = async ($: EngineInterface, e: Call, f: Findings, what: string): Promise<Verdict> => {
   if (e.tool_use_id === undefined) return { decision: 'ask', reason: `${$.plugin.name}: Löschen außerhalb von ${f.ctx.root}: ${f.problems.join('; ')}` }
   const ok = await consent($, what, f, e.agentId)
-  if (ok === 'always' && f.remember) await remember($, f.remember, f.ctx)
+  if (ok === 'always' && f.remember) {
+    const chosen: string[] = []
+    for (const start of f.remember) {
+      const c = await chooseFolder($, start, f.ctx)
+      if (c !== null) chosen.push(c)
+    }
+    if (chosen.length) await remember($, collapse(chosen, f.ctx.win), f.ctx)
+  }
   return ok === true || ok === 'always'
     ? { decision: 'allow', reason: `${$.plugin.name}: vom Nutzer genehmigt` }
     : { decision: 'deny', reason: `${$.plugin.name}: ${ok}` }
@@ -301,10 +346,7 @@ async function checkForUpdate($: EngineInterface): Promise<void> {
 // selbst fehl, wird abgelehnt statt durchgelassen.
 export const register: Register = (on, options) => {
   boundaryOption = typeof options.boundary === 'string' ? options.boundary : ''
-  const allowed = options.allowedFolders
-  allowedOption = Array.isArray(allowed) ? allowed.filter((x): x is string => typeof x === 'string')
-    : typeof allowed === 'string' && allowed.trim() ? allowed.split(/[;\n]/).map(x => x.trim()).filter(Boolean)
-    : []
+  allowedOption = splitFolders(options.allowedFolders)
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)

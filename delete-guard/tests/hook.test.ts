@@ -138,3 +138,9 @@ test('Option allowedFolders: Symlink aus dem freien Ordner nach außen fragt', {
   expect((await check($, 'rm -rf /tmp/link/')).decision).toBe('ask')
   expect((await check($, 'rm /tmp/link')).decision).toBe('allow')
 })
+
+test('Option allowedFolders als Text mit Kommas (so speichert es die Kommandozeile)', { options: { allowedFolders: '/tmp, ~/Downloads' } }, async ($, on) => {
+  engine(on)
+  expect((await check($, 'rm ~/Downloads/a.zip /tmp/x')).decision).toBe('allow')
+  expect((await check($, 'rm /etc/x')).decision).toBe('ask')
+})

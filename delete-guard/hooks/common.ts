@@ -327,3 +327,19 @@ export function asSetting(folder: string, ctx: Ctx): string {
   if (ctx.home && within(folder, ctx.home, ctx.win, false)) return `~${folder.slice(ctx.home.replace(/\/$/, '').length)}`
   return folder
 }
+
+/** Ein Ordner und alle darüber, die freigegeben werden dürfen (ohne Wurzeln). */
+export function ancestors(folder: string): string[] {
+  const out: string[] = []
+  for (let f = folder; canRemember(f); f = parentOf(f)) {
+    out.push(f)
+    if (parentOf(f) === f) break
+  }
+  return out
+}
+
+/** Die Option `allowedFolders` als Liste: echte Liste oder Text mit `,` `;` oder Zeilen. */
+export function splitFolders(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,;\n]/) : []
+  return list.filter((x): x is string => typeof x === 'string').map(x => x.trim()).filter(Boolean)
+}
