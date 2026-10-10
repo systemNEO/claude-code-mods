@@ -5,7 +5,7 @@
 
 import {
   type Ctx, type Out, type State, type Val, type Mode, type Run,
-  DELETE_CMDS, absolute, addTarget, decodeEncoded, fork, inlineCode, lang, parentOf,
+  DELETE_CMDS, absolute, addTarget, decodeEncoded, fork, inlineCode, lang, moveTo, parentOf,
 } from './common'
 
 type Part =
@@ -23,7 +23,11 @@ type Tok =
   | { k: 'redir'; op: string }
   | { k: 'heredoc'; doc: Heredoc }
 
-type Cmd = { words: Word[]; docs: Heredoc[]; herestrings: Word[]; stdin: Word | null; prev: Cmd | null }
+type Cmd = {
+  words: Word[]; docs: Heredoc[]; herestrings: Word[]; stdin: Word | null; prev: Cmd | null
+  /** Subshell-Tiefe `( … )`; `piped`/`after` sagen, ob er in einer eigenen Shell läuft. */
+  sub: number; piped: boolean; after: string
+}
 
 const OPS = ['&&', '||', ';;&', ';;', ';&', '|&', '&>>', '&>', '>>', '>|', '>&', '<&', '<<<', '<<-', '<<', '<>', '>', '<', ';', '&', '|', '(', ')']
 const REDIRS = new Set(['&>>', '&>', '>>', '>|', '>&', '<&', '<<<', '<>', '>', '<'])
@@ -199,12 +203,14 @@ export function lex(s: string): Tok[] {
 
 function parse(toks: Tok[]): Cmd[] {
   const cmds: Cmd[] = []
-  const fresh = (prev: Cmd | null): Cmd => ({ words: [], docs: [], herestrings: [], stdin: null, prev })
+  let depth = 0
+  const fresh = (prev: Cmd | null): Cmd => ({ words: [], docs: [], herestrings: [], stdin: null, prev, sub: depth, piped: false, after: ';' })
   let cur = fresh(null)
   let redir: string | null = null
-  const finish = (prev: boolean) => {
-    if (cur.words.length || cur.docs.length) cmds.push(cur)
-    cur = fresh(prev && (cur.words.length || cur.docs.length) ? cur : null)
+  const finish = (prev: boolean, op = ';') => {
+    const used = cur.words.length > 0 || cur.docs.length > 0
+    if (used) { cur.piped = prev; cur.after = op; cmds.push(cur) }
+    cur = fresh(prev && used ? cur : null)
   }
   for (const t of toks) {
     if (t.k === 'w') {
@@ -214,7 +220,12 @@ function parse(toks: Tok[]): Cmd[] {
       redir = null
     } else if (t.k === 'redir') redir = t.op
     else if (t.k === 'heredoc') cur.docs.push(t.doc)
-    else finish(t.op === '|' || t.op === '|&')
+    else {
+      finish(t.op === '|' || t.op === '|&', t.op)
+      if (t.op === '(') depth++
+      if (t.op === ')') depth = Math.max(0, depth - 1)
+      cur.sub = depth
+    }
   }
   finish(false)
   return cmds
@@ -542,10 +553,10 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
     const rest = skipOpts(args, st, ctx, new Set())
     const target = rest.length ? one(rest[0], st, ctx) : ctx.home
     if (name === 'pushd') st.stack.push(st.cwd)
-    st.cwd = target === null || target === '-' ? null : absolute(target, st.cwd, ctx, false)
+    moveTo(st, target === null || target === '-' ? null : absolute(target, st.cwd, ctx, false), cmd.after !== '&&')
     return
   }
-  if (name === 'popd') { st.cwd = st.stack.length ? (st.stack.pop() ?? null) : null; return }
+  if (name === 'popd') { moveTo(st, st.stack.length ? (st.stack.pop() ?? null) : null, cmd.after !== '&&'); return }
 
   // Pipeline-Eingabe (xargs): ihre Ziele zählen zu den Löschzielen.
   const piped = st.pipe
@@ -841,7 +852,16 @@ function nested(name: string, vals: (string | null)[], st: State, run: Run, cmd?
 export function analyzeIn(src: string, st: State, run: Run): void {
   if (run.depth >= MAX_DEPTH) return void run.out.unknowns.push('zu tief verschachtelt')
   const inner = { ...run, depth: run.depth + 1 }
-  for (const cmd of parse(lex(src))) runCmd(cmd, st, inner)
+  // `( … )`, Pipeline-Glieder und `&` laufen in einer eigenen Shell: ein `cd`
+  // oder eine Zuweisung darin gilt nicht für die Befehle danach.
+  const saved: State[] = []
+  for (const cmd of parse(lex(src))) {
+    while (saved.length < cmd.sub) saved.push(fork(st))
+    while (saved.length > cmd.sub) Object.assign(st, saved.pop())
+    const own = cmd.piped || cmd.prev !== null || cmd.after === '&'
+    runCmd(cmd, own ? fork(st) : st, inner)
+  }
+  while (saved.length) Object.assign(st, saved.pop())
 }
 
 export function analyzeBash(src: string, st: State, ctx: Ctx, out: Out): void {

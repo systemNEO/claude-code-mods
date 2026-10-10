@@ -2,55 +2,93 @@
 
 A Claude Code mod: **deleting anything outside the project folder requires your approval.**
 
-- Inside the folder the session was started in, Claude decides as usual (rules
-  and permission modes are unchanged; the guard stays out of the way).
-- Outside of it, or wherever the target cannot be determined reliably, the
-  guard opens its own *Allow / Deny* dialog, **in every permission mode**
-  (including `auto`, `acceptEdits` and `bypassPermissions`), even when an allow
-  rule such as `Bash(rm:*)` matches, and for subagents too.
-- Where nobody can be asked (`claude -p`, the SDK), the call is denied.
-- Free text typed into the dialog ("Other") counts as a denial and is passed on
-  to Claude as the reason.
+## What this does
 
-The dialog text is currently in German ("Erlauben" = allow, "Ablehnen" = deny).
+Before Claude runs a shell command (Bash, PowerShell, Monitor) or an MCP tool
+that deletes, delete-guard works out which paths the call would delete. If all
+of them lie inside the folder the session was started in, nothing changes and
+Claude decides as usual. If any of them lies outside, or cannot be determined,
+delete-guard opens its own dialog with two options: *Erlauben* (allow) runs the
+call, *Ablehnen* (deny) refuses it. Claude sees the refusal and the reason.
+(The dialog text is currently in German.)
 
-## What is detected
+## Rules
 
-| Environment | Commands |
+| Situation | What happens |
 | --- | --- |
-| Bash (Linux, WSL, Git Bash) | `rm`, `rmdir`, `unlink`, `shred`, `trash`/`trash-put`, `gio trash`, `rimraf`, `find -delete` / `-exec rm`, `fd -x rm`, `xargs rm` (including the pipeline's source), `rsync --delete` / `--remove-source-files`, `git clean`, `git rm`, `git worktree remove`, `dd of=`, `mkfs`, `wipefs` |
-| PowerShell | `Remove-Item` and its aliases (`rm`, `ri`, `del`, `erase`, `rd`, `rmdir`), `-Path`/`-LiteralPath`/arrays, pipelines (`gci … \| Remove-Item`, `% { Remove-Item $_ }`), `.Delete()`, `[IO.File]::Delete`, `Remove-ItemProperty` (registry), `Clear-RecycleBin`, `Invoke-Expression` |
-| cmd.exe | `del`, `erase`, `rd`, `rmdir`, also behind `if exist …` / `for … do` |
-| Nested | `sudo`, `env`, `timeout`, `nice`, `npx` …, `bash -c`, `sh -c '…' _ arg`, `eval`, heredocs, `echo … \| bash`, `$(…)`, `powershell -Command` / `-EncodedCommand`, `cmd /c`, `wsl …` |
-| Inline code | `python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, `deno eval` containing delete calls |
-| Scripts | `bash x.sh`, `./x.sh`, `source x.sh`, `.\x.ps1`, `x.cmd`: one level deep, if they live in the project or in a temp folder |
-| MCP | tools with `delete`/`remove`/`unlink`/`rmdir`/`trash` in their name and path arguments |
+| Every target lies inside the start folder | No dialog. The usual rules and permission mode decide, as without the mod. |
+| A target lies outside the start folder | Dialog listing the outside targets and the command. |
+| A target cannot be determined (a variable without a value, `$(cat list)`, `cat list \| xargs rm`, `Invoke-Expression $x`, `cd -`) | Treated as outside: dialog. |
+| The target is the start folder itself (`rm -rf .`, `rm -rf /path/to/project`) | Treated as outside: dialog. |
+| Wildcards (`*`, `?`, `[…]`, `{a,b}`) | What counts is the folder before the first wildcard: `../*` is the contents of `..` (outside), `build/*` the contents of `build` (inside). |
+| `.*` with `find` and others | May match `..` in some shells, so the parent folder counts too. |
+| A path inside the project whose symlink leads outside | Outside where the deletion follows the link (`rm -rf link/`), inside where it only removes the link (`rm link`). |
+| A path written outside that resolves into the project | Still outside. Resolving a path never turns it into "inside". |
+| The command moves first (`cd`, `pushd`/`popd`, `Set-Location`, `env -C`, `git -C`) | Paths are measured from the new folder. |
+| The move may fail (`cd dir; rm …`, `cd dir \|\| rm …`, a new line) | Paths are measured from both the old and the new folder; only `cd dir && …` counts as certain. |
+| The move happens in its own shell (`( cd dir )`, a pipeline element, `cd dir &`) | It ends there, as in the shell: later commands are measured from the old folder. |
+| Any permission mode (`default`, `acceptEdits`, `auto`, `bypassPermissions`) or an allow rule such as `Bash(rm:*)` | The dialog still opens for targets outside. |
+| The usual rules already deny the call | Stays denied, no dialog. |
+| Subagents | Same rules. The dialog says a subagent wants to delete. |
+| *Erlauben* | The call runs, without a second permission prompt. |
+| *Ablehnen* | The call is refused; Claude is told the user denied it. |
+| Free text typed into the dialog ("Other") | Counts as a denial; the text is passed on to Claude as the reason. |
+| Nobody can be asked (`claude -p`, the SDK, dialog dismissed) | Denied. |
+| The check itself fails | Denied (fail closed). |
+| Scripts started by the command (`bash x.sh`, `./x.sh`, `source x.sh`, `.\x.ps1`, `x.cmd`) | Read and checked one level deep if they lie in the project or a temp folder. Installed tools elsewhere (e.g. `~/.nvm/nvm.sh`) are not read. |
+| MCP tools with `delete`/`remove`/`unlink`/`rmdir`/`trash`/`erase` in their name | Their path arguments are checked like `rm -r`. Such tools without path arguments (e.g. deleting a cloud document) are left alone. |
 
-Paths are resolved: `~`, `$HOME`, `$env:TEMP`, `%APPDATA%`, `cd` within the
-command, variable assignments, `for` loops, wildcards (`../*` = the contents of
-`..`), `{a,b}`, `$(pwd)`, `$(dirname "$0")`, `Join-Path`. Symlinks are resolved
-where the deletion follows them (`rm -rf link/` yes, `rm link` no). Windows
-paths are compared case-insensitively; `C:\x`, `/c/x` (Git Bash) and
-`/mnt/c/x` (WSL) count as the same location. Deleting the project folder
-itself counts as "outside".
+## Commands
 
-On Windows, a leading `\` or `\*` points to the root of the current drive
-(`Remove-Item \* -Recurse`, `rd /s /q \`, or by accident as
-`Remove-Item build \*` or `del /q build \*`). This is recognized as `C:\`, as
-are `C:`, `C:*`, `$env:SystemDrive\*`, `%SystemDrive%\*`, `\\?\C:\`,
-`..\..\..\*` past the root, and `rm -rf /*` in Git Bash. A path counts as
-outside as soon as it lies outside either literally *or* after resolving
-symlinks; resolution never turns anything into "inside".
+| Environment | Commands that count as deleting |
+| --- | --- |
+| Bash (Linux, macOS, WSL, Git Bash) | `rm`, `rmdir`, `unlink`, `shred`, `trash`/`trash-put`, `gio trash`, `rimraf`, `find -delete` / `-exec rm`, `fd -x rm`, `xargs rm` (including the source of the pipeline), `rsync --delete` / `--remove-source-files`, `git clean`, `git rm`, `git worktree remove`, `dd of=`, `mkfs`, `wipefs` |
+| PowerShell | `Remove-Item` and its aliases (`rm`, `ri`, `del`, `erase`, `rd`, `rmdir`) with `-Path`, `-LiteralPath`, arrays and every free argument; pipelines (`gci … \| Remove-Item`, `% { Remove-Item $_ }`); `.Delete()`, `[IO.File]::Delete`, `[IO.Directory]::Delete`; `Remove-ItemProperty` (registry); `Clear-RecycleBin`; `Invoke-Expression` |
+| cmd.exe | `del`, `erase`, `rd`, `rmdir`, also behind `if exist …` and `for … do` |
+| Wrappers and nesting | `sudo`, `doas`, `env`, `timeout`, `nice`, `nohup`, `npx`, `pnpm dlx` …; `bash -c`, `sh -c '…' _ arg`, `eval`, heredocs, here-strings, `echo … \| bash`, `$(…)`, backticks; `powershell -Command` / `-EncodedCommand`, `pwsh`, `cmd /c`, `wsl …` |
+| Inline code | `python -c`, `node -e`, `perl -e`, `ruby -e`, `php -r`, `deno eval` with delete calls (`shutil.rmtree`, `os.remove`, `fs.rmSync`, `unlink` …) |
 
-Anything unknown (a variable without a value, `$(cat list)`,
-`cat list | xargs rm`, `Invoke-Expression $x`) counts as outside: better to ask
-once too often.
+Paths are resolved the way the shell would: `~`, `$HOME`, `$env:TEMP`,
+`%APPDATA%` and other environment variables, assignments earlier in the
+command, `for` loops, `$(pwd)`, `$(dirname "$0")`, `$(cd dir && pwd)`,
+`Join-Path`.
+
+Every other command runs as normal.
+
+## Windows: `\` and the drive root
+
+On Windows, a path that starts with `\` is relative to the **root of the
+current drive**, not to the current folder. A stray `\*` after a delete command
+therefore points at `C:\`. delete-guard treats all of these as the drive root,
+and so as outside:
+
+| Written | What Windows does with it | delete-guard sees |
+| --- | --- | --- |
+| `Remove-Item \* -Recurse`, `del /s /q \*`, `rd /s /q \` | Root of the current drive | `C:\` → dialog |
+| `Remove-Item build \*`, `del /q build \*` (stray space) | `build` **and** the drive root | `C:\` → dialog |
+| `Remove-Item / -Recurse` (PowerShell) | Root of the current drive | `C:\` → dialog |
+| `C:` | Current folder on drive C: | `C:\` → dialog (never "the project") |
+| `C:*` | Contents of the current folder on C: | `C:\` → dialog |
+| `cd \; Remove-Item *`, `cd /d C:\ & del /s /q *` | Moves to the root first | `C:\` → dialog |
+| `..\..\..\..\*` | `..` stops at the root | `C:\` → dialog |
+| `$env:SystemDrive\*`, `%SystemDrive%\*` | `C:\*` | `C:\` → dialog |
+| `\\?\C:\*`, `\\.\C:\` | Long-path and device prefixes | outside → dialog |
+| `Microsoft.PowerShell.Core\FileSystem::C:\*` | Provider-qualified path | `C:\` → dialog |
+| `HKLM:\…`, `HKCU:\…`, `Env:\…`, `Cert:\…` | Registry and other providers | outside → dialog |
+| `\\server\share\x` | Network share | outside → dialog |
+| `D:\*` | Root of another drive | `D:\` → dialog |
+| `rm -rf /*`, `rm -rf /c/*` (Git Bash) | Root of the Git install, or of drive C: | `C:\` → dialog |
+| `C:\x`, `/c/x` (Git Bash), `/mnt/c/x` (WSL), `c:\X` | The same place | compared as the same path, case-insensitively |
+
+The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
+`pwsh -EncodedCommand …`, `cmd /c "rd /s /q \"`, `iex "Remove-Item \*"`.
 
 ## Limitations
 
-This is static analysis: programs that delete on their own (a Python script
-file, `make clean`, `npm run clean`) are not seen, nor are scripts outside the
-project and temp folders. Moving (`mv`) does not count as deleting.
+This is static analysis of the command text: programs that delete on their own
+(a Python script file, `make clean`, `npm run clean`) are not seen, nor are
+scripts outside the project and temp folders. Moving (`mv`) does not count as
+deleting.
 
 ## Installation
 
@@ -101,6 +139,18 @@ One exception: each environment with its own Claude Code configuration
 both inside WSL and natively on Windows (PowerShell or cmd), these are two
 separate installations; run the two install commands once in each of them.
 Cloud sessions on claude.ai do not run on your machine and are not covered.
+
+## How it works
+
+- A `tool.check` hook, the permission decision itself: it runs for every tool
+  call, subagents included, and its verdict holds in every permission mode.
+- `$.ui.ask` holds the call until the user answers; the hook then returns
+  `allow` or `deny` with a reason Claude can act on.
+- `$.fs.stat(path, { resolve: true })` resolves symlinks; a path is outside if
+  either the written or the resolved form is.
+- The parsers for Bash, PowerShell and cmd (`hooks/bash.ts`, `hooks/ps.ts`) are
+  pure functions without `$`, tested with about 200 cases in `tests/`.
+  Nothing in the tests is executed; they only analyse command text.
 
 ## Development
 

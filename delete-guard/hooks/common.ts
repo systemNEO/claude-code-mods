@@ -46,6 +46,11 @@ export type State = {
   stack: (string | null)[]
   /** Was `$_` / Pipeline-Eingabe gerade bedeutet (PowerShell, xargs). undefined = nichts. */
   pipe?: Target[] | null
+  /**
+   * Weitere Ordner, in denen der Befehl gerade stehen könnte: nach einem `cd`,
+   * auf das kein `&&` folgt, läuft der Rest auch dann, wenn der `cd` scheiterte.
+   */
+  alts?: string[]
 }
 
 /** Ein ausgewerteter Wortwert. `glob`: enthält unquotierte Platzhalter. */
@@ -58,6 +63,7 @@ export const fork = (st: State): State => ({
   vars: new Map(st.vars),
   stack: [...st.stack],
   pipe: st.pipe,
+  alts: st.alts ? [...st.alts] : undefined,
 })
 
 const DRIVE = /^([A-Za-z]):(?:\/|$)/
@@ -163,16 +169,20 @@ export function addTarget(
     const drive = /^[A-Za-z]:/.exec(s)?.[0]
     const dir = cut < 0 ? (drive ? `${drive}/` : '.') : cut === 0 ? '/' : s.slice(0, cut)
     const seg = s.slice(cut + 1).split('/')[0] ?? ''
-    const abs = absolute(dir, st.cwd, ctx, winSyntax)
-    if (abs === null) return void out.unknowns.push(`${via}: ${v.s} (Ordner unbekannt)`)
-    out.targets.push({ path: abs, mode: 'children', via })
-    if (!dotdotSafe && /^\.[*?[]/.test(seg)) out.targets.push({ path: parentOf(abs), mode: 'children', via })
+    for (const base of [st.cwd, ...(st.alts ?? [])]) {
+      const abs = absolute(dir, base, ctx, winSyntax)
+      if (abs === null) { out.unknowns.push(`${via}: ${v.s} (Ordner unbekannt)`); continue }
+      out.targets.push({ path: abs, mode: 'children', via })
+      if (!dotdotSafe && /^\.[*?[]/.test(seg)) out.targets.push({ path: parentOf(abs), mode: 'children', via })
+    }
     return
   }
   const trailing = /[\\/]\.?$/.test(v.s)
-  const abs = absolute(v.s, st.cwd, ctx, winSyntax)
-  if (abs === null) return void out.unknowns.push(`${via}: ${v.s} (aktueller Ordner unbekannt)`)
-  out.targets.push({ path: abs, mode: trailing && mode === 'exact' ? 'deep' : mode, via })
+  for (const base of [st.cwd, ...(st.alts ?? [])]) {
+    const abs = absolute(v.s, base, ctx, winSyntax)
+    if (abs === null) { out.unknowns.push(`${via}: ${v.s} (aktueller Ordner unbekannt)`); continue }
+    out.targets.push({ path: abs, mode: trailing && mode === 'exact' ? 'deep' : mode, via })
+  }
 }
 
 /** Bekannte Namen von Befehlen, die Dateien löschen (Unix-Seite). */
@@ -207,6 +217,12 @@ export function inlineCode(code: string, args: Val[], st: State, ctx: Ctx, out: 
 }
 
 export type Run = { ctx: Ctx; out: Out; depth: number }
+
+/** Einen `cd` vermerken: der alte Ordner bleibt möglich, wenn der `cd` scheitern kann. */
+export function moveTo(st: State, to: string | null, mayFail: boolean): void {
+  if (mayFail && st.cwd !== null && st.cwd !== to) st.alts = [...(st.alts ?? []), st.cwd]
+  st.cwd = to
+}
 type Analyzer = (src: string, st: State, run: Run) => void
 
 /**

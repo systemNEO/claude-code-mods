@@ -3,7 +3,7 @@
 // Pipelines (gci … | Remove-Item, ForEach-Object { Remove-Item $_ }),
 // verschachtelte Aufrufe (cmd /c, powershell -Command / -EncodedCommand, wsl).
 
-import { type Mode, type Out, type Run, type State, type Val, absolute, addTarget, fork, lang } from './common'
+import { type Mode, type Out, type Run, type State, type Val, absolute, addTarget, fork, lang, moveTo } from './common'
 
 type Part =
   | { t: 'lit'; v: string; q: boolean }
@@ -13,7 +13,7 @@ type Part =
 
 type Word = { parts: Part[]; raw: string }
 type Item = { k: 'w'; w: Word } | { k: 'op'; op: string }
-type Stmt = { items: Item[]; prev: Stmt | null; depth: number; raw: string }
+type Stmt = { items: Item[]; prev: Stmt | null; depth: number; raw: string; after: string }
 
 /** Index hinter der passenden schließenden Klammer zu `s[i]`. */
 function balanced(s: string, i: number): number {
@@ -148,10 +148,10 @@ function statements(src: string): Stmt[] {
   let first = -1
   let last = -1
   let prev: Stmt | null = null
-  const flush = (pipe: boolean) => {
+  const flush = (pipe: boolean, after = ';') => {
     let stmt: Stmt | null = null
     if (cur.length) {
-      stmt = { items: cur, prev, depth, raw: src.slice(spans[first]?.[0] ?? 0, spans[last]?.[1] ?? 0) }
+      stmt = { items: cur, prev, depth, raw: src.slice(spans[first]?.[0] ?? 0, spans[last]?.[1] ?? 0), after }
       out.push(stmt)
     }
     prev = pipe ? stmt : null
@@ -161,7 +161,7 @@ function statements(src: string): Stmt[] {
   items.forEach((it, i) => {
     if (it.k === 'op' && [';', '|', '||', '&&', '&', '{', '}'].includes(it.op)) {
       if (it.op === '&' && cur.length === 0) return // Aufrufoperator `& cmd`
-      flush(it.op === '|')
+      flush(it.op === '|', it.op)
       if (it.op === '{') depth++
       if (it.op === '}') depth = Math.max(0, depth - 1)
       return
@@ -401,12 +401,13 @@ function runStmt(stmt: Stmt, st: State, run: Run): void {
   if (name === 'set-location' || name === 'sl' || name === 'cd' || name === 'chdir' || name === 'push-location' || name === 'pushd') {
     const list = pathsOf(p())
     if (name === 'push-location' || name === 'pushd') st.stack.push(st.cwd)
-    if (!list.length) { st.cwd = ctx.home; return }
+    const mayFail = stmt.after !== '&&'
+    if (!list.length) return moveTo(st, ctx.home, mayFail)
     const v = expand(list[0]?.w ?? { raw: '', parts: [] }, st, run)
-    st.cwd = v && v.length === 1 && v[0]?.s !== '-' ? absolute(v[0]?.s ?? '', st.cwd, ctx, true) : null
+    moveTo(st, v && v.length === 1 && v[0]?.s !== '-' ? absolute(v[0]?.s ?? '', st.cwd, ctx, true) : null, mayFail)
     return
   }
-  if (name === 'pop-location' || name === 'popd') { st.cwd = st.stack.length ? (st.stack.pop() ?? null) : null; return }
+  if (name === 'pop-location' || name === 'popd') return moveTo(st, st.stack.length ? (st.stack.pop() ?? null) : null, stmt.after !== '&&')
   if (name === 'invoke-expression' || name === 'iex') {
     const list = pathsOf(p())
     const w = list[0]?.w
@@ -502,8 +503,8 @@ export function analyzeCmd(src: string, st: State, run: Run): void {
     else if (name === 'cd' || name === 'chdir' || name === 'pushd') {
       const d = plain[0]
       if (name === 'pushd') st.stack.push(st.cwd)
-      if (d !== undefined) st.cwd = d.includes(unknown) ? null : absolute(d, st.cwd, ctx, true)
-    } else if (name === 'popd') st.cwd = st.stack.length ? (st.stack.pop() ?? null) : null
+      if (d !== undefined) moveTo(st, d.includes(unknown) ? null : absolute(d, st.cwd, ctx, true), true)
+    } else if (name === 'popd') moveTo(st, st.stack.length ? (st.stack.pop() ?? null) : null, true)
     else if (name === 'call' || name === 'start') {
       const rest = plain.filter(a => !/^\/\w+$/.test(a))
       if (rest.length) analyzeCmd(rest.map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' '), st, inner)
