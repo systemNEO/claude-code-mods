@@ -1,7 +1,7 @@
 import type { EngineInterface, Register } from 'claude-code'
 import {
   type Ctx, type Lang, type Out, type State, type Target,
-  absolute, baseName, isNewer, isWinPath, lang, newOut, normalizeRoot, parentOf, within,
+  absolute, baseName, isNewer, isWinPath, lang, newOut, normalizeRoot, parentOf, resolveBoundary, within,
 } from './common'
 import './bash'
 import './ps'
@@ -15,6 +15,9 @@ import './ps'
 const SHELL_TOOLS = /^(Bash|PowerShell|Monitor)$/
 const MCP_DELETE = /^mcp__.*(delete|remove|unlink|rmdir|trash|erase)/i
 const MAX_SCRIPT = 256 * 1024
+
+/** Die Option `boundary` (leer: Startordner der Session); gesetzt bei jedem Laden. */
+let boundaryOption = ''
 
 async function context($: EngineInterface): Promise<{ ctx: Ctx; cwd: string }> {
   const [rootRaw, cwdRaw] = await Promise.all([$.session.root(), $.session.cwd()])
@@ -39,7 +42,8 @@ async function context($: EngineInterface): Promise<{ ctx: Ctx; cwd: string }> {
   const root = normalizeRoot(rootRaw, { win })
   const base: Ctx = { root, win, home: null, env: n => table[win ? n.toUpperCase() : n] }
   const homeRaw = HOME ?? USERPROFILE
-  const ctx: Ctx = { ...base, home: homeRaw ? absolute(homeRaw, null, base, win) : null }
+  const withHome: Ctx = { ...base, home: homeRaw ? absolute(homeRaw, null, base, win) : null }
+  const ctx: Ctx = { ...withHome, root: resolveBoundary(boundaryOption, root, withHome) }
   return { ctx, cwd: absolute(cwdRaw, null, ctx, win) ?? root }
 }
 
@@ -237,7 +241,9 @@ async function checkForUpdate($: EngineInterface): Promise<void> {
 // tool.check ist die Rechteprüfung: sie läuft für jeden Aufruf, auch in
 // Subagenten, und ihr Urteil gilt unabhängig vom Modus. Schlägt die Prüfung
 // selbst fehl, wird abgelehnt statt durchgelassen.
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  boundaryOption = typeof options.boundary === 'string' ? options.boundary : ''
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     // Nicht den Start aufhalten: die Prüfung läuft kurz danach, Fehler bleiben still.

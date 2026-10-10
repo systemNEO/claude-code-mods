@@ -262,3 +262,16 @@ export function isNewer(a: string, b: string): boolean {
   }
   return !x.pre && y.pre
 }
+
+/**
+ * Die Grenze aus der Option `boundary`: ein absoluter Pfad oder `~`, `~/…`.
+ * Leer, relativ oder nicht auflösbar: der Startordner der Session.
+ */
+export function resolveBoundary(option: string, sessionRoot: string, ctx: Ctx): string {
+  const o = option.trim().replace(/^["']|["']$/g, '')
+  if (o === '') return sessionRoot
+  const tilde = o === '~' || /^~[\\/]/.test(o)
+  if (tilde && !ctx.home) return sessionRoot
+  const expanded = tilde ? `${ctx.home}${o.slice(1)}` : o
+  return absolute(expanded, null, ctx, ctx.win) ?? sessionRoot
+}

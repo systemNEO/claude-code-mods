@@ -107,3 +107,17 @@ test('Skripte im Projekt und in /tmp werden mitgelesen, installierte Werkzeuge n
   expect((await check($, 'sh /tmp/t.sh')).decision).toBe('ask')
   expect((await check($, 'source ~/.nvm/nvm.sh && nvm use 20')).decision).toBe('allow')
 })
+
+test('Option boundary = ~: der ganze Heimatordner ist frei', { options: { boundary: '~' } }, async ($, on) => {
+  engine(on)
+  expect((await check($, 'rm -rf /home/u/other/x')).decision).toBe('allow')
+  expect((await check($, 'rm -rf ../sibling')).decision).toBe('allow')
+  expect((await check($, 'rm -rf /etc/x')).decision).toBe('ask')
+  expect((await check($, 'rm -rf ~')).decision).toBe('ask')
+})
+
+test('Option boundary = ~/projects: auch der Startordner zählt nur, wenn er darin liegt', { options: { boundary: '~/projects' } }, async ($, on) => {
+  engine(on)
+  expect((await check($, 'rm -rf /home/u/projects/a/build')).decision).toBe('allow')
+  expect((await check($, 'rm -rf build')).decision).toBe('ask')
+})

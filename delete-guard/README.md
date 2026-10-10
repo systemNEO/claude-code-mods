@@ -6,13 +6,17 @@ A Claude Code mod: **deleting anything outside the project folder requires your 
 
 Before Claude runs a shell command (Bash, PowerShell, Monitor) or an MCP tool
 that deletes, delete-guard works out which paths the call would delete. If all
-of them lie inside the folder the session was started in, nothing changes and
+of them lie inside the boundary folder (by default the folder the session was
+started in, see [Configuration](#configuration)), nothing changes and
 Claude decides as usual. If any of them lies outside, or cannot be determined,
 delete-guard opens its own dialog with two options: *Erlauben* (allow) runs the
 call, *Ablehnen* (deny) refuses it. Claude sees the refusal and the reason.
 (The dialog text is currently in German.)
 
 ## Rules
+
+"Start folder" below means the boundary folder: the folder the session was
+started in, or the folder set in [Configuration](#configuration).
 
 | Situation | What happens |
 | --- | --- |
@@ -128,8 +132,9 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 **The boundary**
 
 - The boundary is the folder the session was started in (where `/cd` or a
-  worktree switch moves it), not the shell's current folder. A session
-  started in your home folder treats everything in it as inside.
+  worktree switch moves it), or the `boundary` option; never the shell's
+  current folder. A session started in your home folder, or the boundary `~`,
+  treats everything in your home folder as inside.
 - Symlinks are resolved when the call is checked. If something changes the
   link between the check and the run, the run follows the new link. Hard links
   are not detected.
@@ -156,6 +161,40 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - The update check sends one request a day to `raw.githubusercontent.com`.
 - This is a safety net, not a permission system. Use permission deny rules for
   a hard block, and backups for what matters.
+
+## Configuration
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `boundary` | empty | The folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or `~` for your home folder, e.g. `~`, `~/projects`, `/srv/work`; on Windows `~\projects` or `C:\Users\you\projects`. |
+
+The boundary **replaces** the start folder; it does not add to it. With
+`~/projects`, a session started in `~/projects/app` may delete anywhere in
+`~/projects`, while a session started in `/tmp/demo` asks even for its own
+files. The boundary folder itself, like the start folder, counts as outside:
+deleting `~` with the boundary `~` asks. A relative path (`projects`) or a `~`
+that cannot be resolved is ignored and the start folder applies.
+
+Set it in one of three ways:
+
+- In Claude Code: `/config`, then the delete-guard row *Boundary folder*.
+- In a terminal:
+
+  ```bash
+  echo '{"boundary": "~/projects"}' | claude plugin configure delete-guard@claude-code-mods --values-stdin
+  ```
+
+  `claude plugin configure delete-guard@claude-code-mods` alone shows the current value.
+- In `~/.claude/settings.json`:
+
+  ```json
+  "pluginConfigs": {
+    "delete-guard@claude-code-mods": { "options": { "boundary": "~/projects" } }
+  }
+  ```
+
+An empty value (`""`) goes back to the start folder. Running sessions pick up
+a change made in `/config` right away, otherwise with `/reload-plugins`.
 
 ## Installation
 

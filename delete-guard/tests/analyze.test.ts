@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import { type Ctx, type Lang, isNewer, lang, newOut, within } from '../hooks/common'
+import { type Ctx, type Lang, isNewer, lang, newOut, resolveBoundary, within } from '../hooks/common'
 import '../hooks/bash'
 import '../hooks/ps'
 
@@ -309,4 +309,16 @@ describe('Splatting, -Path:$x und viele Varianten', () => {
   asks(`rm -rf {${Array.from({ length: 70 }, (_, i) => `d${i}`).join(',')},/etc}`)
   asks(`for f in ${Array.from({ length: 70 }, (_, i) => `d${i}`).join(' ')} /etc; do rm -rf "$f"; done`)
   free('rm -rf {a,b,c}/{x,y}')
+})
+
+describe('Option boundary', () => {
+  test('leer: Startordner der Session', () => { expect(resolveBoundary('', '/home/u/proj', LINUX)).toBe('/home/u/proj') })
+  test('~ ist der Heimatordner', () => { expect(resolveBoundary('~', '/home/u/proj', LINUX)).toBe('/home/u') })
+  test('~/projects', () => { expect(resolveBoundary('~/projects/', '/home/u/proj', LINUX)).toBe('/home/u/projects') })
+  test('absolut', () => { expect(resolveBoundary('/srv/work', '/home/u/proj', LINUX)).toBe('/srv/work') })
+  test('relativ: zurück zum Startordner', () => { expect(resolveBoundary('projects', '/home/u/proj', LINUX)).toBe('/home/u/proj') })
+  test('Windows: ~\\projects und C:\\…', () => {
+    expect(resolveBoundary('~\\projects', 'C:/Users/u/proj', WIN)).toBe('C:/Users/u/projects')
+    expect(resolveBoundary('C:\\Users\\u\\projects', 'C:/Users/u/proj', WIN)).toBe('C:/Users/u/projects')
+  })
 })

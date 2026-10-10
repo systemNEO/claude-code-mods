@@ -1,11 +1,19 @@
 {
   "name": "delete-guard",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Deleting outside the project folder requires the user's approval (Bash, PowerShell, cmd, subagents, MCP).",
   "author": {
     "name": "systemNEO"
   },
   "homepage": "https://github.com/systemNEO/claude-code-mods/tree/main/delete-guard",
   "repository": "https://github.com/systemNEO/claude-code-mods",
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "boundary": {
+      "type": "string",
+      "title": "Boundary folder",
+      "description": "Folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or ~ for your home folder, e.g. ~ or ~/projects (Windows: ~\\projects or C:\\Users\\you\\projects).",
+      "default": ""
+    }
+  }
 }
