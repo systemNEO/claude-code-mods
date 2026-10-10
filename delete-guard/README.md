@@ -83,12 +83,79 @@ and so as outside:
 The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 `pwsh -EncodedCommand …`, `cmd /c "rd /s /q \"`, `iex "Remove-Item \*"`.
 
-## Limitations
+## Notes / limitations
 
-This is static analysis of the command text: programs that delete on their own
-(a Python script file, `make clean`, `npm run clean`) are not seen, nor are
-scripts outside the project and temp folders. Moving (`mv`) does not count as
-deleting.
+**What it reads**
+
+- It reads the command text, not what the command does when it runs.
+  Programs that delete on their own are not seen: a Python or Node script
+  file, a compiled binary, `make clean`, `npm run clean`, a Git hook.
+- Shell scripts that the command starts (`bash x.sh`, `./x.sh`, `source x.sh`,
+  `.\x.ps1`, `x.cmd`) are read one level deep, and only if they lie in the
+  project or a temp folder. Scripts those scripts call, and scripts elsewhere
+  (installed tools such as `~/.nvm/nvm.sh`), are not read.
+- Inline code (`python -c`, `node -e` …) is checked by a heuristic: it looks
+  for delete calls and takes every string in the code as a possible path.
+  Paths built at run time count as unknown (dialog); deliberately obfuscated
+  code can slip through.
+- Aliases and shell functions from your shell profile are not known. A
+  function defined in the same command is checked where its body appears.
+- Unrecognised wrappers hide the command behind them, for example
+  `chroot /mnt rm …`, `strace rm …`, `flock file rm …`.
+- Commands that run elsewhere are not followed: `ssh host rm …`,
+  `docker exec … rm …`, `kubectl exec …`. A container with a host folder
+  mounted (`docker run -v /:/host … rm -rf /host`) can delete on this machine
+  without a dialog.
+- PowerShell is a subset: script blocks, functions and `foreach` loops are
+  read as plain statements, so a variable they set is unknown (dialog).
+  Splatting (`Remove-Item @params`) is unknown (dialog). `Start-Process` with
+  an argument list is not followed.
+- More than 64 variants of one word (long `for` lists, nested `{a,b}`) count as
+  unknown (dialog) instead of being checked one by one. Nesting deeper than six
+  levels (`bash -c` in `eval` in …) counts as unknown too.
+
+**What counts as deleting**
+
+- Only deleting. Other ways to lose data are not held: moving (`mv`),
+  overwriting (`> file`, `cp` over a file, `sed -i`, `truncate`),
+  `git reset --hard`, `git checkout -- .`, `git stash drop`, `chmod`,
+  dropping a database.
+- Only the Bash, PowerShell and Monitor tools and MCP tools whose name says
+  they delete. Claude's file tools (Write, Edit) cannot delete, but can
+  overwrite a file outside the project; Claude Code's own permission settings
+  govern those.
+
+**The boundary**
+
+- The boundary is the folder the session was started in (where `/cd` or a
+  worktree switch moves it), not the shell's current folder. A session
+  started in your home folder treats everything in it as inside.
+- Symlinks are resolved when the call is checked. If something changes the
+  link between the check and the run, the run follows the new link. Hard links
+  are not detected.
+- `/tmp`, the Claude scratchpad and every other folder outside the project
+  are outside: cleaning them up asks too.
+
+**The dialog**
+
+- The dialog text is in German. It lists up to eight findings (with a count
+  of the rest) and shows the command cut to 400 characters.
+- Allowing runs the whole command as written, not just the deleting part. It
+  holds a call; it does not sandbox it.
+- Some harmless commands ask too: a `cd` that might fail
+  (`cd dir; rm ../x`), a variable whose value it cannot know (`rm -rf "$OUT"`
+  with `OUT` set outside the command), `rm -rf "$(mktemp -d)"`.
+- If the check itself fails, the call is denied. A rare parsing problem can
+  therefore block a legitimate command.
+
+**Other**
+
+- Windows support (PowerShell, cmd, Git Bash, drive roots) is covered by tests
+  of the analysis, which only read command text. It has not yet been run in a
+  live Windows session.
+- The update check sends one request a day to `raw.githubusercontent.com`.
+- This is a safety net, not a permission system. Use permission deny rules for
+  a hard block, and backups for what matters.
 
 ## Installation
 
@@ -193,7 +260,7 @@ Cloud sessions on claude.ai do not run on your machine and are not covered.
 - A `session.start` hook schedules the daily update check with `$.clock.after`,
   so it never delays the start of a session; `$.store` remembers the last check.
 - The parsers for Bash, PowerShell and cmd (`hooks/bash.ts`, `hooks/ps.ts`) are
-  pure functions without `$`, tested with about 200 cases in `tests/`.
+  pure functions without `$`, tested with about 210 cases in `tests/`.
   Nothing in the tests is executed; they only analyse command text.
 
 ## Development

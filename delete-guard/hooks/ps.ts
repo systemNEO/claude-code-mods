@@ -198,7 +198,11 @@ function lookup(name: string, st: State, run: Run): Val[] | null {
 
 function expand(w: Word, st: State, run: Run): Val[] | null {
   let acc: Val[] = [{ s: '', glob: false }]
-  const join = (alts: Val[]) => { acc = acc.flatMap(a => alts.map(b => ({ s: a.s + b.s, glob: a.glob || b.glob }))).slice(0, 64) }
+  let overflow = false
+  const join = (alts: Val[]) => {
+    if (acc.length * alts.length > 64) { overflow = true; return }
+    acc = acc.flatMap(a => alts.map(b => ({ s: a.s + b.s, glob: a.glob || b.glob })))
+  }
   for (const p of w.parts) {
     if (p.t === 'lit') {
       let v = p.v
@@ -217,7 +221,7 @@ function expand(w: Word, st: State, run: Run): Val[] | null {
       join(v)
     } else return null
   }
-  return acc
+  return overflow ? null : acc
 }
 
 /** Join-Path, Get-Location/pwd, Resolve-Path X; sonst unbekannt. */
@@ -252,11 +256,11 @@ const LISTERS = new Set(['get-childitem', 'gci', 'ls', 'dir', 'get-item', 'gi', 
 const FILTERS = new Set(['where-object', 'where', '?', 'sort-object', 'sort', 'select-object', 'select', 'tee-object', 'tee'])
 const VALUED = ['filter', 'include', 'exclude', 'credential', 'stream', 'erroraction', 'ea', 'warningaction', 'wa', 'informationaction', 'infa', 'errorvariable', 'ev', 'outvariable', 'ov', 'outbuffer', 'ob', 'pipelinevariable', 'pv', 'progressaction', 'proga', 'depth', 'attributes', 'name']
 
-type Params = { paths: { w: Word; literal: boolean }[]; positional: Word[][] }
+type Params = { paths: { w: Word; literal: boolean }[]; positional: Word[][]; splat: string[] }
 
 /** Parameter eines Cmdlets: -Path/-LiteralPath (auch abgekürzt, auch `a,b`) und freie Argumente. */
 function params(items: Item[]): Params {
-  const out: Params = { paths: [], positional: [] }
+  const out: Params = { paths: [], positional: [], splat: [] }
   const take = (i: number): [Word[], number] => {
     const ws: Word[] = []
     let j = i
@@ -280,7 +284,12 @@ function params(items: Item[]): Params {
       const isLit = n === 'lp' || (n.length >= 2 && 'literalpath'.startsWith(n)) || n === 'pspath'
       const isPath = !isLit && n.length >= 1 && 'path'.startsWith(n)
       if (isLit || isPath) {
-        if (pm[2] !== undefined) { out.paths.push({ w: { raw: pm[2], parts: [{ t: 'lit', v: pm[2], q: false }] }, literal: isLit }); i++; continue }
+        if (pm[2] !== undefined) {
+          // -Path:$x, -Path:'C:\a',"b": der Wert ist ein Ausdruck wie sonst auch
+          for (const x of lex(pm[2]).items) if (x.k === 'w') out.paths.push({ w: x.w, literal: isLit })
+          i++
+          continue
+        }
         const [ws, j] = take(i + 1)
         ws.forEach(w => out.paths.push({ w, literal: isLit }))
         i = j
@@ -291,6 +300,7 @@ function params(items: Item[]): Params {
       continue
     }
     if (/^\/[A-Za-z]$/.test(raw)) { i++; continue } // cmd-Schalter (/s /q) in PowerShell
+    if (/^@[A-Za-z_]\w*$/.test(raw)) { out.splat.push(raw); i++; continue } // Splatting: Parameter aus einer Tabelle
     const [ws, j] = take(i)
     out.positional.push(ws)
     i = j
@@ -383,7 +393,9 @@ function runStmt(stmt: Stmt, st: State, run: Run): void {
   const p = () => params(items)
 
   if (REMOVE.has(name)) {
-    const list = allPaths(p())
+    const params_ = p()
+    for (const sp of params_.splat) out.unknowns.push(`${name} ${sp}: Parameter per Splatting nicht auflösbar`)
+    const list = allPaths(params_)
     const reg = name === 'remove-itemproperty' || name === 'rp'
     if (list.length) addWords(list, st, run, name, reg ? 'exact' : 'deep')
     else if (stmt.prev) {

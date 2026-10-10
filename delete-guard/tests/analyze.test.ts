@@ -299,3 +299,14 @@ describe('Versionsvergleich für den Update-Hinweis', () => {
     expect(isNewer('1.0.0-beta', '1.0.0')).toBe(false)
   })
 })
+
+describe('Splatting, -Path:$x und viele Varianten', () => {
+  asks("$p = @{ Path = 'C:\\'; Recurse = $true }; Remove-Item @p", 'ps', WIN)
+  asks('Remove-Item -Path:$unbekannt -Recurse', 'ps', WIN)
+  asks("Remove-Item -Path:'C:\\x' -Recurse", 'ps', WIN)
+  asks('$d = "C:\\x"; Remove-Item -LiteralPath:$d', 'ps', WIN)
+  free('$d = "build"; Remove-Item -Path:$d -Recurse', 'ps', WIN)
+  asks(`rm -rf {${Array.from({ length: 70 }, (_, i) => `d${i}`).join(',')},/etc}`)
+  asks(`for f in ${Array.from({ length: 70 }, (_, i) => `d${i}`).join(' ')} /etc; do rm -rf "$f"; done`)
+  free('rm -rf {a,b,c}/{x,y}')
+})

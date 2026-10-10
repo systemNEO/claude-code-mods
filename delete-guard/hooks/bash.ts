@@ -251,23 +251,41 @@ function lookup(name: string, st: State, ctx: Ctx): Val[] | null {
   return v === undefined ? null : [{ s: v, glob: false }]
 }
 
-function braces(v: string): string[] {
+const MAX_VARIANTS = 64
+
+/** `{a,b}` ausmultiplizieren; null bei mehr als MAX_VARIANTS Ergebnissen. */
+function braces(v: string): string[] | null {
   const m = /^(.*?)\{([^{}]*,[^{}]*)\}(.*)$/s.exec(v)
   if (!m) return [v]
   const [, a = '', mid = '', b = ''] = m
-  return mid.split(',').flatMap(x => braces(a + x + b)).slice(0, 64)
+  const out: string[] = []
+  for (const x of mid.split(',')) {
+    const r = braces(a + x + b)
+    if (r === null || out.length + r.length > MAX_VARIANTS) return null
+    out.push(...r)
+  }
+  return out
 }
 
 /** Ein Wort auswerten; null, wenn ein Teil unbekannt ist. */
 function expand(w: Word, st: State, ctx: Ctx): Val[] | null {
+  // Zu viele Varianten (lange for-Listen, verschachtelte {a,b}) sind
+  // „unbekannt“: abschneiden hieße, einen Teil der Ziele nicht zu prüfen.
   let acc: Val[] = [{ s: '', glob: false }]
+  let overflow = false
   const join = (alts: Val[]) => {
-    acc = acc.flatMap(a => alts.map(b => ({ s: a.s + b.s, glob: a.glob || b.glob }))).slice(0, 64)
+    if (acc.length * alts.length > MAX_VARIANTS) { overflow = true; return }
+    acc = acc.flatMap(a => alts.map(b => ({ s: a.s + b.s, glob: a.glob || b.glob })))
   }
   for (const p of w.parts) {
+    if (overflow) return null
     if (p.t === 'lit') {
       if (p.q) join([{ s: p.v, glob: false }])
-      else join(braces(p.v).map(s => ({ s, glob: /[*?[]|\{[^}]*\.\.[^}]*\}/.test(s) })))
+      else {
+        const alts = braces(p.v)
+        if (alts === null) return null
+        join(alts.map(s => ({ s, glob: /[*?[]|\{[^}]*\.\.[^}]*\}/.test(s) })))
+      }
     } else if (p.t === 'var') {
       const v = lookup(p.name, st, ctx) ?? (p.def !== undefined ? [{ s: p.def, glob: false }] : null)
       if (!v) return null
@@ -281,7 +299,7 @@ function expand(w: Word, st: State, ctx: Ctx): Val[] | null {
       join([{ s: v, glob: false }])
     } else return null
   }
-  return acc
+  return overflow ? null : acc
 }
 
 /** $(pwd), $(dirname X), $(realpath X), $(cd X && pwd): gängige Pfad-Ausdrücke. */

@@ -21,6 +21,12 @@ Each environment with its own Claude Code configuration (for example WSL and
 native Windows on the same PC) needs its own installation; see
 [where delete-guard applies](delete-guard/README.md#where-it-applies).
 
+Inside a running Claude Code session this works too:
+
+```
+/plugin install delete-guard --marketplace systemNEO/claude-code-mods
+```
+
 To update later:
 
 ```bash
@@ -30,12 +36,6 @@ claude plugin update delete-guard@claude-code-mods
 
 delete-guard also tells you once a day when a newer version is available. See
 [Updates](delete-guard/README.md#updates) for automatic updates.
-
-Inside a running Claude Code session this works too:
-
-```
-/plugin install delete-guard --marketplace systemNEO/claude-code-mods
-```
 
 ## License
 
