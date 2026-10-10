@@ -4,7 +4,7 @@ Mods for [Claude Code](https://claude.com/claude-code) by systemNEO.
 
 | Mod | What it does |
 | --- | --- |
-| [delete-guard](delete-guard/) | Deleting outside the project folder requires your approval, in every permission mode and for subagents too; Bash, PowerShell, cmd, Git Bash, WSL, MCP |
+| [delete-guard](delete-guard/) | Deleting outside the project folder requires your approval, in every permission mode and for subagents too; Bash, PowerShell, cmd, Git Bash, WSL, MCP. Allow a folder once or for good from the dialog, or list allowed folders such as `/tmp` yourself. |
 
 ## Installation
 

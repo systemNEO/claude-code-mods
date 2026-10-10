@@ -7,10 +7,17 @@ A Claude Code mod: **deleting anything outside the project folder requires your 
 Before Claude runs a shell command (Bash, PowerShell, Monitor) or an MCP tool
 that deletes, delete-guard works out which paths the call would delete. If all
 of them lie inside the boundary folder (by default the folder the session was
-started in, see [Configuration](#configuration)), nothing changes and
-Claude decides as usual. If any of them lies outside, or cannot be determined,
-delete-guard opens its own dialog with two options: *Erlauben* (allow) runs the
-call, *Ablehnen* (deny) refuses it. Claude sees the refusal and the reason.
+started in) or in one of your allowed folders (see
+[Configuration](#configuration)), nothing changes and Claude decides as usual.
+If any of them lies outside, or cannot be determined, delete-guard opens its
+own dialog:
+
+| Choice | What happens |
+| --- | --- |
+| *Erlauben* (allow) | The call runs this once. |
+| *Immer erlauben* (always allow) | The call runs, and you pick a folder to free for good: the target's folder, or walk up with *Höher …* (and back with *Tiefer …*) to the one you want. See [Allow a folder from the dialog](#allow-a-folder-from-the-dialog). |
+| *Ablehnen* (deny) | The call is refused; Claude sees the refusal and the reason. |
+
 (The dialog text is currently in German.)
 
 ## Installation
@@ -107,7 +114,10 @@ An empty value (`""`) goes back to the start folder.
 session in that environment, whichever folder it starts in:
 
 - New sessions use the new value right away.
-- Sessions that are already running pick it up with `/reload-plugins`.
+- The session in which you change it (with *Immer erlauben*,
+  `/plugin configure` or the CLI) reloads the mod by itself; Claude Code shows
+  *delete-guard: options changed — reloaded*.
+- Other sessions that are already running pick it up with `/reload-plugins`.
 - It is one value for all projects. A different boundary per project or per
   session is not possible yet (see [To do](#to-do)).
 - Like the installation itself, it applies only to the environment whose
@@ -360,8 +370,11 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - *Immer erlauben* saves the folder through the plugin's `/config` row where
   the engine offers one, and otherwise runs
   `claude plugin configure delete-guard@claude-code-mods --values-stdin`, which
-  writes the same entry in `settings.json`. If both fail, the call still runs
-  once and a line in the transcript says why nothing was saved.
+  writes the same entry in `settings.json` (on Windows also tried as
+  `cmd /c claude …`). For a plugin installed from a marketplace the engine
+  currently offers no such row, so the CLI is the path that is used. If both
+  fail, the call still runs once and a line in the transcript says why nothing
+  was saved.
 - A `session.start` hook schedules the daily update check with `$.clock.after`,
   so it never delays the start of a session; `$.store` remembers the last check.
 - The parsers for Bash, PowerShell and cmd (`hooks/bash.ts`, `hooks/ps.ts`) are
