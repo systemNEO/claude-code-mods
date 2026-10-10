@@ -122,7 +122,7 @@ test('Option boundary = ~/projects: auch der Startordner zählt nur, wenn er dar
   expect((await check($, 'rm -rf build')).decision).toBe('ask')
 })
 
-test('Option allowedFolders: dort frei, sonst weiter gefragt', { options: { allowedFolders: ['/tmp', '~/Downloads'] } }, async ($, on) => {
+test('Option allowedFolders: dort frei, sonst weiter gefragt', { options: { allowedFolders: '/tmp, ~/Downloads' } }, async ($, on) => {
   engine(on)
   expect((await check($, 'rm -rf /tmp/build')).decision).toBe('allow')
   expect((await check($, 'rm -rf /tmp/*')).decision).toBe('allow')
@@ -133,7 +133,7 @@ test('Option allowedFolders: dort frei, sonst weiter gefragt', { options: { allo
   expect((await check($, 'rm -rf /tmp/x /etc/y')).decision).toBe('ask')
 })
 
-test('Option allowedFolders: Symlink aus dem freien Ordner nach außen fragt', { options: { allowedFolders: ['/tmp'] } }, async ($, on) => {
+test('Option allowedFolders: Symlink aus dem freien Ordner nach außen fragt', { options: { allowedFolders: '/tmp' } }, async ($, on) => {
   engine(on, { links: { '/tmp': '/tmp', '/tmp/link': '/srv/data' } })
   expect((await check($, 'rm -rf /tmp/link/')).decision).toBe('ask')
   expect((await check($, 'rm /tmp/link')).decision).toBe('allow')

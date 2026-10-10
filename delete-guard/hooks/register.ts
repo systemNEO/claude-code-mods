@@ -231,10 +231,11 @@ async function chooseFolder($: EngineInterface, start: string, ctx: Ctx): Promis
 async function remember($: EngineInterface, folders: readonly string[], ctx: Ctx): Promise<void> {
   const value = [...new Set([...allowedOption, ...folders.map(f => asSetting(f, ctx))])]
   try {
-    const key = `${$.plugin.name}.allowedFolders`
-    // Als Liste; wo der Wert nur Text nimmt (so speichert ihn die Kommandozeile), mit Kommas.
-    let r = await $.config.set({ key, value })
-    if (r.deny !== undefined) r = await $.config.set({ key, value: value.join(', ') })
+    // Den Schlüssel nicht raten: die /config-Zeile dieser Mod für allowedFolders suchen.
+    const mine = (await $.config.list()).filter(r => r.provider.plugin === $.plugin.name)
+    const row = mine.find(r => /(^|[.:])allowedFolders$/.test(r.key))
+    if (!row) throw new Error(`keine /config-Zeile für allowedFolders (vorhanden: ${mine.map(r => r.key).join(', ') || 'keine'})`)
+    const r = await $.config.set({ key: row.key, value: value.join(', ') })
     if (r.deny !== undefined) throw new Error(r.deny)
     allowedOption = value
     $.ui.toast(`${$.plugin.name}: dauerhaft frei: ${folders.map(f => asSetting(f, ctx)).join(', ')}`)

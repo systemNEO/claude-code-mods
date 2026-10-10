@@ -1,6 +1,6 @@
 {
   "name": "delete-guard",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Deleting outside the project folder requires the user's approval (Bash, PowerShell, cmd, subagents, MCP).",
   "author": {
     "name": "systemNEO"
@@ -17,10 +17,9 @@
     },
     "allowedFolders": {
       "type": "string",
-      "multiple": true,
       "title": "Allowed folders",
-      "description": "More folders inside which deleting needs no approval, in addition to the boundary, e.g. /tmp or ~/Downloads. An absolute path or ~/…. \"Immer erlauben\" (always allow) in the dialog adds folders here.",
-      "default": []
+      "description": "More folders inside which deleting needs no approval, in addition to the boundary, separated by commas, e.g. /tmp, ~/Downloads. An absolute path or ~/…. \"Immer erlauben\" (always allow) in the dialog adds folders here.",
+      "default": ""
     }
   }
 }
