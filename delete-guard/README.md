@@ -177,7 +177,7 @@ that cannot be resolved is ignored and the start folder applies.
 
 Set it in one of three ways:
 
-- In Claude Code: `/config`, then the delete-guard row *Boundary folder*.
+- In Claude Code: `/plugin configure delete-guard@claude-code-mods`.
 - In a terminal:
 
   ```bash
@@ -193,8 +193,8 @@ Set it in one of three ways:
   }
   ```
 
-An empty value (`""`) goes back to the start folder. Running sessions pick up
-a change made in `/config` right away, otherwise with `/reload-plugins`.
+An empty value (`""`) goes back to the start folder. New sessions use the new
+value; running sessions pick it up with `/reload-plugins`.
 
 ## Installation
 
