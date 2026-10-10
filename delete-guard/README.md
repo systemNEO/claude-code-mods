@@ -356,6 +356,11 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
   `allow` or `deny` with a reason Claude can act on.
 - `$.fs.stat(path, { resolve: true })` resolves symlinks; a path is outside if
   either the written or the resolved form is.
+- *Immer erlauben* saves the folder through the plugin's `/config` row where
+  the engine offers one, and otherwise runs
+  `claude plugin configure delete-guard@claude-code-mods --values-stdin`, which
+  writes the same entry in `settings.json`. If both fail, the call still runs
+  once and a line in the transcript says why nothing was saved.
 - A `session.start` hook schedules the daily update check with `$.clock.after`,
   so it never delays the start of a session; `$.store` remembers the last check.
 - The parsers for Bash, PowerShell and cmd (`hooks/bash.ts`, `hooks/ps.ts`) are

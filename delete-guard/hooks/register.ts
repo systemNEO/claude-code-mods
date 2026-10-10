@@ -227,16 +227,46 @@ async function chooseFolder($: EngineInterface, start: string, ctx: Ctx): Promis
   return null
 }
 
+/** Die Plugin-ID `name@marketplace`, aus dem Installationsordner (…/cache/<marketplace>/<name>/<version>). */
+function pluginId($: EngineInterface): string {
+  const m = /[\\/]cache[\\/]([^\\/]+)[\\/]([^\\/]+)[\\/][^\\/]+[\\/]?$/.exec($.plugin.root)
+  return m ? `${m[2]}@${m[1]}` : $.plugin.name
+}
+
+/**
+ * Die Option `allowedFolders` dauerhaft setzen. Erst über die /config-Zeile der
+ * Mod; wo die Engine für ein installiertes Plugin keine führt, über die
+ * Kommandozeile (`claude plugin configure … --values-stdin`), die denselben
+ * Eintrag in settings.json schreibt.
+ */
+async function saveAllowed($: EngineInterface, value: string): Promise<void> {
+  const rows = await $.config.list()
+  const row = rows.find(r => /(^|[.:@])allowedFolders$/.test(r.key) && (r.provider.plugin === $.plugin.name || r.key.startsWith($.plugin.name)))
+  if (row) {
+    const r = await $.config.set({ key: row.key, value })
+    if (r.deny === undefined) return
+  }
+  const id = pluginId($)
+  const argv = ['plugin', 'configure', id, '--values-stdin']
+  const init = { stdin: JSON.stringify({ allowedFolders: value }), timeoutMs: 20000 }
+  const run = async (cmd: readonly string[]) => {
+    try {
+      return await $.process.run(cmd, init)
+    } catch {
+      return null
+    }
+  }
+  const res = (await run(['claude', ...argv])) ?? (await run(['cmd', '/c', 'claude', ...argv]))
+  if (res && res.exitCode === 0) return
+  const seen = rows.filter(r => r.key.includes($.plugin.name) || r.provider.plugin === $.plugin.name).map(r => r.key)
+  throw new Error(`weder /config (Zeilen der Mod: ${seen.join(', ') || 'keine'}) noch \`claude plugin configure ${id}\` (${res ? `Exit ${res.exitCode}: ${(res.stderr || res.stdout).trim().slice(0, 200)}` : 'nicht startbar'})`)
+}
+
 /** „Immer erlauben“: die Ordner an die Option `allowedFolders` anhängen. */
 async function remember($: EngineInterface, folders: readonly string[], ctx: Ctx): Promise<void> {
   const value = [...new Set([...allowedOption, ...folders.map(f => asSetting(f, ctx))])]
   try {
-    // Den Schlüssel nicht raten: die /config-Zeile dieser Mod für allowedFolders suchen.
-    const mine = (await $.config.list()).filter(r => r.provider.plugin === $.plugin.name)
-    const row = mine.find(r => /(^|[.:])allowedFolders$/.test(r.key))
-    if (!row) throw new Error(`keine /config-Zeile für allowedFolders (vorhanden: ${mine.map(r => r.key).join(', ') || 'keine'})`)
-    const r = await $.config.set({ key: row.key, value: value.join(', ') })
-    if (r.deny !== undefined) throw new Error(r.deny)
+    await saveAllowed($, value.join(', '))
     allowedOption = value
     $.ui.toast(`${$.plugin.name}: dauerhaft frei: ${folders.map(f => asSetting(f, ctx)).join(', ')}`)
   } catch (err) {

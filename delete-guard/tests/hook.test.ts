@@ -144,3 +144,9 @@ test('Option allowedFolders als Text mit Kommas (so speichert es die Kommandozei
   expect((await check($, 'rm ~/Downloads/a.zip /tmp/x')).decision).toBe('allow')
   expect((await check($, 'rm /etc/x')).decision).toBe('ask')
 })
+
+test('Plugin-ID aus dem Installationsordner', async () => {
+  const id = (root: string) => /[\\/]cache[\\/]([^\\/]+)[\\/]([^\\/]+)[\\/][^\\/]+[\\/]?$/.exec(root)
+  expect(id('/home/u/.claude/plugins/cache/claude-code-mods/delete-guard/0.6.2')?.slice(1)).toEqual(['claude-code-mods', 'delete-guard'])
+  expect(id('C:\\Users\\u\\.claude\\plugins\\cache\\claude-code-mods\\delete-guard\\0.6.2')?.slice(1)).toEqual(['claude-code-mods', 'delete-guard'])
+})
