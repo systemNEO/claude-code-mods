@@ -17,6 +17,9 @@ claude plugin install delete-guard@claude-code-mods
 
 The mod is installed for your user, i.e. for all projects and sessions on the
 machine. Sessions that are already running pick it up with `/reload-plugins`.
+Each environment with its own Claude Code configuration (for example WSL and
+native Windows on the same PC) needs its own installation; see
+[where delete-guard applies](delete-guard/README.md#where-it-applies).
 
 Inside a running Claude Code session this works too:
 

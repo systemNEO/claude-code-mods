@@ -83,6 +83,25 @@ claude plugin disable delete-guard@claude-code-mods
 claude plugin uninstall delete-guard@claude-code-mods
 ```
 
+## Where it applies
+
+Once installed, the mod applies to every Claude Code session on that machine,
+in every project and folder (it is installed with the `user` scope).
+
+- **New sessions** load it automatically.
+- **Sessions that are already running** need `/reload-plugins` once.
+- **Subagents** are covered within every session.
+- **`claude -p` (scripts, automation):** the mod is active, but nobody can be
+  asked there, so deleting outside the start folder is denied.
+- **Desktop app:** local Code sessions of the desktop app load plugins
+  installed for the user as well.
+
+One exception: each environment with its own Claude Code configuration
+(`~/.claude`) needs its own installation. On a Windows PC that runs Claude Code
+both inside WSL and natively on Windows (PowerShell or cmd), these are two
+separate installations; run the two install commands once in each of them.
+Cloud sessions on claude.ai do not run on your machine and are not covered.
+
 ## Development
 
 ```bash
