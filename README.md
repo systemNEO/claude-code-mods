@@ -37,6 +37,21 @@ claude plugin update delete-guard@claude-code-mods
 delete-guard also tells you once a day when a newer version is available. See
 [Updates](delete-guard/README.md#updates) for automatic updates.
 
+## Configuration
+
+By default, delete-guard lets Claude delete freely inside the folder the
+session was started in. To use another folder as the boundary, for example
+your home folder or your projects folder, set the `boundary` option:
+
+```bash
+echo '{"boundary": "~/projects"}' | claude plugin configure delete-guard@claude-code-mods --values-stdin
+```
+
+or, inside Claude Code, `/plugin configure delete-guard@claude-code-mods`.
+`claude plugin configure delete-guard@claude-code-mods` shows the current
+value; `{"boundary": ""}` goes back to the start folder. Details in
+[delete-guard → Configuration](delete-guard/README.md#configuration).
+
 ## License
 
 MIT

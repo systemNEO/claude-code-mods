@@ -13,6 +13,135 @@ delete-guard opens its own dialog with two options: *Erlauben* (allow) runs the
 call, *Ablehnen* (deny) refuses it. Claude sees the refusal and the reason.
 (The dialog text is currently in German.)
 
+## Installation
+
+On any machine (Linux, macOS, Windows), in a terminal:
+
+```bash
+claude plugin marketplace add systemNEO/claude-code-mods
+claude plugin install delete-guard@claude-code-mods
+```
+
+The first line adds this repository as a marketplace, the second installs the
+mod for your user, i.e. for all projects and sessions on that machine. On
+Windows this works the same in PowerShell, cmd or Git Bash; the mod runs inside
+Claude Code itself and needs neither Node nor Python.
+
+Alternatively, inside a running Claude Code session:
+
+```
+/plugin install delete-guard --marketplace systemNEO/claude-code-mods
+```
+
+Sessions that are already running pick up the mod with `/reload-plugins`.
+
+## Configuration
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `boundary` | empty | The folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or `~` for your home folder, e.g. `~`, `~/projects`, `/srv/work`; on Windows `~\projects` or `C:\Users\you\projects`. |
+
+The boundary **replaces** the start folder; it does not add to it. With
+`~/projects`, a session started in `~/projects/app` may delete anywhere in
+`~/projects`, while a session started in `/tmp/demo` asks even for its own
+files. The boundary folder itself, like the start folder, counts as outside:
+deleting `~` with the boundary `~` asks. A relative path (`projects`) or a `~`
+that cannot be resolved is ignored and the start folder applies.
+
+Set it in one of three ways:
+
+- In Claude Code: `/plugin configure delete-guard@claude-code-mods`.
+- In a terminal:
+
+  ```bash
+  echo '{"boundary": "~/projects"}' | claude plugin configure delete-guard@claude-code-mods --values-stdin
+  ```
+
+  The same line works in PowerShell. In cmd, leave out the single quotes:
+  `echo {"boundary": "~\\projects"} | claude plugin configure delete-guard@claude-code-mods --values-stdin`.
+  In JSON, a backslash is written twice: `"C:\\Users\\you\\projects"`.
+  `claude plugin configure delete-guard@claude-code-mods` alone shows the current value.
+- In `~/.claude/settings.json`:
+
+  ```json
+  "pluginConfigs": {
+    "delete-guard@claude-code-mods": { "options": { "boundary": "~/projects" } }
+  }
+  ```
+
+An empty value (`""`) goes back to the start folder. New sessions use the new
+value; running sessions pick it up with `/reload-plugins`.
+
+## Updates
+
+**Update by hand** (on every machine that has the mod):
+
+```bash
+claude plugin marketplace update claude-code-mods
+claude plugin update delete-guard@claude-code-mods
+```
+
+The first line fetches the current state of this repository, the second
+installs the newer version. Then run `/reload-plugins` in sessions that are
+already running (or restart them); new sessions load it automatically.
+
+**Update hint from the mod itself:** once a day, shortly after a session
+starts, delete-guard reads the version on GitHub. If it is newer than the
+installed one, it shows a notice with the two commands above. It never
+installs anything on its own: a deletion guard that silently loads new code
+would be a risk of its own. To turn the hint off, set
+`DELETE_GUARD_NO_UPDATE_CHECK=1` (it is also off with
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
+
+**Automatic updates by Claude Code:** Claude Code can keep a marketplace and
+its plugins up to date by itself. For marketplaces like this one it is off by
+default. To turn it on, open `/plugin` → *Marketplaces* → `claude-code-mods` →
+*Enable auto-update*, or add `"autoUpdate": true` to the marketplace entry in
+`~/.claude/settings.json`:
+
+```json
+"extraKnownMarketplaces": {
+  "claude-code-mods": {
+    "source": { "source": "github", "repo": "systemNEO/claude-code-mods" },
+    "autoUpdate": true
+  }
+}
+```
+
+Claude Code then checks in the background during a session and reports
+"Plugin updated … Run /reload-plugins to apply". Turning it on means new
+versions of this repository are installed without asking you each time.
+
+**For maintainers:** Claude Code installs a new copy only when the `version` in
+`.claude-plugin/plugin.json` changes. Bump it with every change you publish,
+otherwise `claude plugin update` reports "already at the latest version".
+
+## Disable or remove
+
+```bash
+claude plugin disable delete-guard@claude-code-mods
+claude plugin uninstall delete-guard@claude-code-mods
+```
+
+## Where it applies
+
+Once installed, the mod applies to every Claude Code session on that machine,
+in every project and folder (it is installed with the `user` scope).
+
+- **New sessions** load it automatically.
+- **Sessions that are already running** need `/reload-plugins` once.
+- **Subagents** are covered within every session.
+- **`claude -p` (scripts, automation):** the mod is active, but nobody can be
+  asked there, so deleting outside the start folder is denied.
+- **Desktop app:** local Code sessions of the desktop app load plugins
+  installed for the user as well.
+
+One exception: each environment with its own Claude Code configuration
+(`~/.claude`) needs its own installation. On a Windows PC that runs Claude Code
+both inside WSL and natively on Windows (PowerShell or cmd), these are two
+separate installations; run the two install commands once in each of them.
+Cloud sessions on claude.ai do not run on your machine and are not covered.
+
 ## Rules
 
 "Start folder" below means the boundary folder: the folder the session was
@@ -161,132 +290,6 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - The update check sends one request a day to `raw.githubusercontent.com`.
 - This is a safety net, not a permission system. Use permission deny rules for
   a hard block, and backups for what matters.
-
-## Configuration
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `boundary` | empty | The folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or `~` for your home folder, e.g. `~`, `~/projects`, `/srv/work`; on Windows `~\projects` or `C:\Users\you\projects`. |
-
-The boundary **replaces** the start folder; it does not add to it. With
-`~/projects`, a session started in `~/projects/app` may delete anywhere in
-`~/projects`, while a session started in `/tmp/demo` asks even for its own
-files. The boundary folder itself, like the start folder, counts as outside:
-deleting `~` with the boundary `~` asks. A relative path (`projects`) or a `~`
-that cannot be resolved is ignored and the start folder applies.
-
-Set it in one of three ways:
-
-- In Claude Code: `/plugin configure delete-guard@claude-code-mods`.
-- In a terminal:
-
-  ```bash
-  echo '{"boundary": "~/projects"}' | claude plugin configure delete-guard@claude-code-mods --values-stdin
-  ```
-
-  `claude plugin configure delete-guard@claude-code-mods` alone shows the current value.
-- In `~/.claude/settings.json`:
-
-  ```json
-  "pluginConfigs": {
-    "delete-guard@claude-code-mods": { "options": { "boundary": "~/projects" } }
-  }
-  ```
-
-An empty value (`""`) goes back to the start folder. New sessions use the new
-value; running sessions pick it up with `/reload-plugins`.
-
-## Installation
-
-On any machine (Linux, macOS, Windows), in a terminal:
-
-```bash
-claude plugin marketplace add systemNEO/claude-code-mods
-claude plugin install delete-guard@claude-code-mods
-```
-
-The first line adds this repository as a marketplace, the second installs the
-mod for your user, i.e. for all projects and sessions on that machine. On
-Windows this works the same in PowerShell, cmd or Git Bash; the mod runs inside
-Claude Code itself and needs neither Node nor Python.
-
-Alternatively, inside a running Claude Code session:
-
-```
-/plugin install delete-guard --marketplace systemNEO/claude-code-mods
-```
-
-Sessions that are already running pick up the mod with `/reload-plugins`.
-
-## Updates
-
-**Update by hand** (on every machine that has the mod):
-
-```bash
-claude plugin marketplace update claude-code-mods
-claude plugin update delete-guard@claude-code-mods
-```
-
-The first line fetches the current state of this repository, the second
-installs the newer version. Then run `/reload-plugins` in sessions that are
-already running (or restart them); new sessions load it automatically.
-
-**Update hint from the mod itself:** once a day, shortly after a session
-starts, delete-guard reads the version on GitHub. If it is newer than the
-installed one, it shows a notice with the two commands above. It never
-installs anything on its own: a deletion guard that silently loads new code
-would be a risk of its own. To turn the hint off, set
-`DELETE_GUARD_NO_UPDATE_CHECK=1` (it is also off with
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
-
-**Automatic updates by Claude Code:** Claude Code can keep a marketplace and
-its plugins up to date by itself. For marketplaces like this one it is off by
-default. To turn it on, open `/plugin` → *Marketplaces* → `claude-code-mods` →
-*Enable auto-update*, or add `"autoUpdate": true` to the marketplace entry in
-`~/.claude/settings.json`:
-
-```json
-"extraKnownMarketplaces": {
-  "claude-code-mods": {
-    "source": { "source": "github", "repo": "systemNEO/claude-code-mods" },
-    "autoUpdate": true
-  }
-}
-```
-
-Claude Code then checks in the background during a session and reports
-"Plugin updated … Run /reload-plugins to apply". Turning it on means new
-versions of this repository are installed without asking you each time.
-
-**For maintainers:** Claude Code installs a new copy only when the `version` in
-`.claude-plugin/plugin.json` changes. Bump it with every change you publish,
-otherwise `claude plugin update` reports "already at the latest version".
-
-## Disable or remove
-
-```bash
-claude plugin disable delete-guard@claude-code-mods
-claude plugin uninstall delete-guard@claude-code-mods
-```
-
-## Where it applies
-
-Once installed, the mod applies to every Claude Code session on that machine,
-in every project and folder (it is installed with the `user` scope).
-
-- **New sessions** load it automatically.
-- **Sessions that are already running** need `/reload-plugins` once.
-- **Subagents** are covered within every session.
-- **`claude -p` (scripts, automation):** the mod is active, but nobody can be
-  asked there, so deleting outside the start folder is denied.
-- **Desktop app:** local Code sessions of the desktop app load plugins
-  installed for the user as well.
-
-One exception: each environment with its own Claude Code configuration
-(`~/.claude`) needs its own installation. On a Windows PC that runs Claude Code
-both inside WSL and natively on Windows (PowerShell or cmd), these are two
-separate installations; run the two install commands once in each of them.
-Cloud sessions on claude.ai do not run on your machine and are not covered.
 
 ## How it works
 
