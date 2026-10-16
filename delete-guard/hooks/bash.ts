@@ -4,13 +4,28 @@
 // `unknowns` und braucht damit ebenfalls die Zustimmung.
 
 import {
-  type Ctx, type Out, type State, type Val, type Mode, type Run,
-  DELETE_CMDS, absolute, addTarget, decodeEncoded, fork, inlineCode, lang, moveTo, parentOf,
+  type Ctx, type Gap, type Out, type State, type Val, type Mode, type Run,
+  DELETE_CMDS, absolute, addGap, addTarget, decodeEncoded, fork, inlineCode, lang, moveTo, parentOf,
 } from './common'
+
+/**
+ * Parameter-Operatoren, die sich rein aus bekannten Werten berechnen lassen
+ * (`${c%%:*}`, `${f/.png/.jpg}`, `${s:0:3}` …). Muster werden wie in Bash als
+ * Glob gelesen; was davon nicht sicher nachzubilden ist (extglob, `&` in der
+ * Ersetzung), bleibt unbekannt.
+ */
+type ParamOp =
+  | { k: 'trim'; side: '#' | '##' | '%' | '%%'; pat: Word }
+  | { k: 'repl'; all: boolean; anchor: '' | '#' | '%'; pat: Word; rep: Word }
+  | { k: 'slice'; off: number; len?: number }
+  | { k: 'case'; how: '^^' | ',,' | '^' | ',' }
+  | { k: 'len' }
+  | { k: 'alt'; colon: boolean; word: Word }
+  | { k: 'err' }
 
 type Part =
   | { t: 'lit'; v: string; q: boolean }
-  | { t: 'var'; name: string; q: boolean; def?: string }
+  | { t: 'var'; name: string; q: boolean; def?: string; op?: ParamOp; src?: string }
   | { t: 'sub'; src: string }
   | { t: 'dyn'; what: string }
   | { t: 'tilde'; user: string }
@@ -77,12 +92,7 @@ export function lex(s: string): Tok[] {
     if (n === '(') { const e = balanced(s, i + 1); parts.push({ t: 'sub', src: s.slice(i + 2, e - 1) }); return e }
     if (n === '{') {
       const e = balanced(s, i + 1, '{', '}')
-      const inner = s.slice(i + 2, e - 1)
-      const m = /^([A-Za-z_]\w*|\d+|[@*#?$!-])$/.exec(inner)
-      const d = /^([A-Za-z_]\w*):?[-=](.*)$/.exec(inner)
-      if (m) parts.push({ t: 'var', name: inner, q })
-      else if (d) parts.push({ t: 'var', name: d[1] ?? '', q, def: d[2] ?? '' })
-      else parts.push({ t: 'dyn', what: `\${${inner}}` })
+      parts.push(paramPart(s.slice(i + 2, e - 1), q))
       return e
     }
     const name = /^([A-Za-z_]\w*|\d|[@*#?$!-])/.exec(s.slice(i + 1))
@@ -201,6 +211,78 @@ export function lex(s: string): Tok[] {
   return toks
 }
 
+/** Index des ersten `/`, das nicht maskiert oder angeführt ist; -1 wenn keins. */
+function unescapedSlash(s: string): number {
+  for (let j = 0; j < s.length; j++) {
+    const c = s[j]
+    if (c === '\\') { j++; continue }
+    if (c === "'") { j = s.indexOf("'", j + 1); if (j < 0) return -1; continue }
+    if (c === '"') { for (j++; j < s.length && s[j] !== '"'; j++) if (s[j] === '\\') j++; continue }
+    if (c === '/') return j
+  }
+  return -1
+}
+
+/**
+ * Ein Muster oder Ersatztext innerhalb von `${…}` als Wort. Ein `_` davor,
+ * damit ein führendes `#` nicht als Kommentar gilt; null, wo das Stück kein
+ * einzelnes Wort ist (Leerzeichen, Operatoren).
+ */
+function wordOf(src: string): Word | null {
+  if (src === '') return { parts: [], raw: '' }
+  if (src.startsWith('~')) {
+    const toks = lex(src)
+    const t = toks[0]
+    return toks.length === 1 && t?.k === 'w' && t.w.raw === src ? t.w : null
+  }
+  const toks = lex(`_${src}`)
+  const t = toks[0]
+  if (toks.length !== 1 || t?.k !== 'w' || t.w.raw !== `_${src}`) return null
+  const [p0, ...rest] = t.w.parts
+  if (!p0 || p0.t !== 'lit' || p0.q || !p0.v.startsWith('_')) return null
+  return { raw: src, parts: p0.v === '_' ? rest : [{ ...p0, v: p0.v.slice(1) }, ...rest] }
+}
+
+/** Das Innere von `${…}` deuten: Variable, Vorgabe oder ein Operator darauf. */
+function paramPart(inner: string, q: boolean): Part {
+  const src = `\${${inner}}`
+  const dyn: Part = { t: 'dyn', what: src }
+  if (/^([A-Za-z_]\w*|\d+|[@*#?$!-])$/.test(inner)) return { t: 'var', name: inner, q }
+  const len = /^#([A-Za-z_]\w*|\d+)$/.exec(inner)
+  if (len) return { t: 'var', name: len[1] ?? '', q, op: { k: 'len' }, src }
+  const m = /^([A-Za-z_]\w*|\d+)(.+)$/s.exec(inner)
+  if (!m) return dyn
+  const name = m[1] ?? ''
+  const rest = m[2] ?? ''
+  const v = (op: ParamOp): Part => ({ t: 'var', name, q, op, src })
+  let r: RegExpExecArray | null
+  if ((r = /^:?[-=]/.exec(rest))) return { t: 'var', name, q, def: rest.slice(r[0].length), src }
+  if ((r = /^(:?)\+/.exec(rest))) {
+    const w = wordOf(rest.slice(r[0].length))
+    return w ? v({ k: 'alt', colon: r[1] === ':', word: w }) : dyn
+  }
+  if (/^:?\?/.test(rest)) return v({ k: 'err' })
+  if ((r = /^(##|#|%%|%)/.exec(rest))) {
+    const w = wordOf(rest.slice(r[0].length))
+    return w ? v({ k: 'trim', side: r[1] as '#' | '##' | '%' | '%%', pat: w }) : dyn
+  }
+  if ((r = /^\/([/#%]?)/.exec(rest))) {
+    const body = rest.slice(r[0].length)
+    const cut = unescapedSlash(body)
+    const repSrc = cut < 0 ? '' : body.slice(cut + 1)
+    const pat = wordOf(cut < 0 ? body : body.slice(0, cut))
+    const rep = wordOf(repSrc)
+    // `&` in der Ersetzung steht seit Bash 5.2 für den Treffer: nicht nachgebildet.
+    if (!pat || !rep || repSrc.includes('&')) return dyn
+    const anchor = r[1] === '#' || r[1] === '%' ? r[1] : ''
+    return v({ k: 'repl', all: r[1] === '/', anchor, pat, rep })
+  }
+  if ((r = /^(\^\^|,,|\^|,)$/.exec(rest))) return v({ k: 'case', how: r[1] as '^^' | ',,' | '^' | ',' })
+  if ((r = /^:\s*(-?\d+)\s*(?::\s*(-?\d+)\s*)?$/.exec(rest)))
+    return v({ k: 'slice', off: Number(r[1]), len: r[2] === undefined ? undefined : Number(r[2]) })
+  return dyn
+}
+
 function parse(toks: Tok[]): Cmd[] {
   const cmds: Cmd[] = []
   let depth = 0
@@ -287,7 +369,7 @@ function expand(w: Word, st: State, ctx: Ctx): Val[] | null {
         join(alts.map(s => ({ s, glob: /[*?[]|\{[^}]*\.\.[^}]*\}/.test(s) })))
       }
     } else if (p.t === 'var') {
-      const v = lookup(p.name, st, ctx) ?? (p.def !== undefined ? [{ s: p.def, glob: false }] : null)
+      const v = varValue(p, st, ctx)
       if (!v) return null
       join(v.map(x => ({ s: x.s, glob: x.glob || (!p.q && /[*?[]/.test(x.s)) })))
     } else if (p.t === 'tilde') {
@@ -300,6 +382,215 @@ function expand(w: Word, st: State, ctx: Ctx): Val[] | null {
     } else return null
   }
   return overflow ? null : acc
+}
+
+type VarPart = Extract<Part, { t: 'var' }>
+
+/** Wert(e) einer Variablen samt Operator; null, wenn unbekannt. */
+function varValue(p: VarPart, st: State, ctx: Ctx): Val[] | null {
+  const base = lookup(p.name, st, ctx)
+  const op = p.op
+  if (!op) return base ?? (p.def !== undefined ? [{ s: p.def, glob: false }] : null)
+  if (!base) return null
+  if (op.k === 'alt') {
+    const alt = expand(op.word, st, ctx)
+    if (!alt) return null
+    const out = base.flatMap(x => (op.colon && x.s === '' ? [{ s: '', glob: false }] : alt))
+    return out.length > MAX_VARIANTS ? null : out
+  }
+  const out: Val[] = []
+  for (const x of base) {
+    const r = applyOp(op, x.s, st, ctx)
+    if (r === null) return null
+    out.push({ s: r, glob: x.glob })
+  }
+  return out
+}
+
+const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+
+/** Ein Bash-Glob als RegExp-Quelle; null bei extglob und POSIX-Klassen. */
+export function globRe(s: string): string | null {
+  let r = ''
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i] ?? ''
+    if ('?*+@!'.includes(c) && s[i + 1] === '(') return null
+    if (c === '*') r += '[^]*'
+    else if (c === '?') r += '[^]'
+    else if (c === '[') {
+      const e = s.indexOf(']', i + 2)
+      if (e < 0) { r += '\\['; continue }
+      let body = s.slice(i + 1, e)
+      if (body.includes('[:') || body.includes('[=') || body.includes('[.')) return null
+      const neg = body.startsWith('!') || body.startsWith('^')
+      if (neg) body = body.slice(1)
+      r += `[${neg ? '^' : ''}${body.replace(/\\/g, '\\\\').replace(/^\]/, '\\]')}]`
+      i = e
+    } else r += esc(c)
+  }
+  return r
+}
+
+/** Das Muster eines Operators als RegExp (angeführte Teile wörtlich); null, wenn unbekannt. */
+function patternRe(w: Word, st: State, ctx: Ctx): RegExp | null {
+  let src = ''
+  for (const p of w.parts) {
+    let piece: string | null
+    if (p.t === 'lit') piece = p.q ? esc(p.v) : globRe(p.v)
+    else if (p.t === 'var') {
+      const v = varValue(p, st, ctx)
+      const s = v && v.length === 1 ? (v[0]?.s ?? null) : null
+      piece = s === null ? null : p.q ? esc(s) : globRe(s)
+    } else if (p.t === 'tilde') piece = p.user === '' && ctx.home ? esc(ctx.home) : null
+    else piece = null
+    if (piece === null) return null
+    src += piece
+  }
+  return new RegExp(`^(?:${src})$`)
+}
+
+const MAX_OP_LEN = 4096
+
+/** Einen Operator auf einen bekannten Wert anwenden, wie Bash es täte. */
+function applyOp(op: Exclude<ParamOp, { k: 'alt' }>, s: string, st: State, ctx: Ctx): string | null {
+  if (s.length > MAX_OP_LEN) return null
+  switch (op.k) {
+    case 'err': return s
+    case 'len': return String([...s].length)
+    case 'case':
+      if (op.how === '^^') return s.toUpperCase()
+      if (op.how === ',,') return s.toLowerCase()
+      return (op.how === '^' ? s.charAt(0).toUpperCase() : s.charAt(0).toLowerCase()) + s.slice(1)
+    case 'slice': {
+      const ch = [...s]
+      const start = op.off < 0 ? ch.length + op.off : op.off
+      if (start < 0 || start > ch.length) return ''
+      const end = op.len === undefined ? ch.length : op.len < 0 ? ch.length + op.len : start + op.len
+      if (end < start) return null // Bash bricht hier mit einem Fehler ab
+      return ch.slice(start, end).join('')
+    }
+    case 'trim': {
+      const re = patternRe(op.pat, st, ctx)
+      if (!re) return null
+      const n = s.length
+      if (op.side === '#') { for (let i = 0; i <= n; i++) if (re.test(s.slice(0, i))) return s.slice(i); return s }
+      if (op.side === '##') { for (let i = n; i >= 0; i--) if (re.test(s.slice(0, i))) return s.slice(i); return s }
+      if (op.side === '%') { for (let i = n; i >= 0; i--) if (re.test(s.slice(i))) return s.slice(0, i); return s }
+      for (let i = 0; i <= n; i++) if (re.test(s.slice(i))) return s.slice(0, i)
+      return s
+    }
+    case 'repl': {
+      const re = patternRe(op.pat, st, ctx)
+      const rep = one(op.rep, st, ctx) ?? (op.rep.parts.length === 0 ? '' : null)
+      if (!re || rep === null) return null
+      const n = s.length
+      if (op.anchor === '#') { for (let j = n; j >= 0; j--) if (re.test(s.slice(0, j))) return rep + s.slice(j); return s }
+      if (op.anchor === '%') { for (let i = 0; i <= n; i++) if (re.test(s.slice(i))) return s.slice(0, i) + rep; return s }
+      if (op.pat.parts.length === 0) return s
+      let res = ''
+      let done = false
+      for (let i = 0; i < n;) {
+        let hit = -1
+        if (!done) for (let j = n; j > i; j--) if (re.test(s.slice(i, j))) { hit = j; break }
+        if (hit < 0) { res += s[i]; i++; continue }
+        res += rep
+        i = hit
+        if (!op.all) done = true
+      }
+      return res
+    }
+  }
+}
+
+// ---------------------------------------------------------------- Ursachen
+
+type Cause = { kind: Gap['kind']; construct: string; word: string }
+
+/** `${…}` oder `$((…))`, die der Parser nicht kennt, als Ursache. */
+function dynCause(what: string): Cause {
+  if (what.startsWith('$((')) return { kind: 'arith', construct: '$((…))', word: what }
+  const inner = what.slice(2, -1)
+  if (inner.startsWith('!')) return { kind: 'param-op', construct: '${!…}', word: what }
+  if (/^[A-Za-z_]\w*\[/.test(inner)) return { kind: 'param-op', construct: '${…[…]}', word: what }
+  const at = /^[A-Za-z_]\w*@([A-Za-z])/.exec(inner)
+  if (at) return { kind: 'param-op', construct: `\${…@${at[1]}}`, word: what }
+  const op = /^(?:[A-Za-z_]\w*|\d+)?([^\w\s]{1,2})/.exec(inner)?.[1] ?? '?'
+  return { kind: 'param-op', construct: `\${…${op}…}`, word: what }
+}
+
+const OP_SIG: Record<ParamOp['k'], (op: ParamOp) => string> = {
+  trim: op => `\${…${op.k === 'trim' ? op.side : ''}…}`,
+  repl: op => `\${…/${op.k === 'repl' ? (op.all ? '/' : op.anchor) : ''}…/…}`,
+  slice: () => '${…:n:m}',
+  case: () => '${…^^}',
+  len: () => '${#…}',
+  alt: () => '${…:+…}',
+  err: () => '${…:?…}',
+}
+
+function varCause(p: VarPart, st: State, ctx: Ctx): Cause {
+  const name = p.name
+  if (p.op && lookup(name, st, ctx)) return { kind: 'param-op', construct: `${OP_SIG[p.op.k](p.op)} (Muster/Ersatz unbekannt)`, word: p.src ?? name }
+  if (st.vars.has(name)) {
+    const why = st.why?.get(name)
+    return why ? { kind: why.kind, construct: why.construct, word: `$${name} ← ${why.word ?? ''}` } : { kind: 'other', construct: `$${name}`, word: `$${name}` }
+  }
+  return { kind: 'env', construct: `$${name}`, word: `$${name}` }
+}
+
+/** Den sicher bekannten Anfang absolut machen; ein abschließendes `/` bleibt. */
+function absPrefix(pre: string, st: State, ctx: Ctx): string | undefined {
+  if (pre === '' || (!pre.startsWith('/') && st.cwd === null)) return undefined
+  const abs = absolute(pre, st.cwd, ctx, false)
+  if (abs === null) return undefined
+  return pre.endsWith('/') && !abs.endsWith('/') ? `${abs}/` : abs
+}
+
+/** Warum sich `w` nicht auswerten lässt, und was von seinem Anfang feststeht. */
+function cause(w: Word, st: State, ctx: Ctx): { why: Cause; prefix?: string } {
+  let pre = ''
+  let open = true
+  for (const p of w.parts) {
+    let vals: string[] | null = null
+    let glob = false
+    let why: Cause | null = null
+    if (p.t === 'lit') {
+      const alts = p.q ? [p.v] : braces(p.v)
+      if (alts === null) why = { kind: 'variants', construct: '{…,…}', word: p.v }
+      else { vals = alts; glob = !p.q }
+    } else if (p.t === 'var') {
+      const v = varValue(p, st, ctx)
+      if (v) { vals = v.map(x => x.s); glob = !p.q || v.some(x => x.glob) } else why = varCause(p, st, ctx)
+    } else if (p.t === 'tilde') {
+      if (p.user === '' && ctx.home) vals = [ctx.home]
+      else why = { kind: 'other', construct: '~user', word: `~${p.user}` }
+    } else if (p.t === 'sub') {
+      const v = evalSub(p.src, st, ctx)
+      if (v === null) why = { kind: 'subst', construct: `$(${p.src.trim().split(/\s+/)[0] ?? ''} …)`, word: `$(${p.src})` }
+      else vals = [v]
+    } else why = dynCause(p.what)
+    if (why) return { why, prefix: open ? absPrefix(pre, st, ctx) : undefined }
+    if (!open) continue
+    const only = vals?.length === 1 ? (vals[0] ?? '') : null
+    if (only === null) { open = false; continue }
+    const g = glob ? only.search(/[*?[]/) : -1
+    if (g >= 0) { pre += only.slice(0, g); open = false } else pre += only
+  }
+  return { why: { kind: 'variants', construct: 'zu viele Varianten', word: w.raw } }
+}
+
+/** Ein nicht auswertbares Argument als Lücke melden, mit Ursache und bekanntem Anfang. */
+function gapFor(out: Out, via: string, w: Word, st: State, ctx: Ctx): void {
+  const { why, prefix } = cause(w, st, ctx)
+  const detail = why.word && why.word !== w.raw ? `: ${why.word}` : ''
+  addGap(out, { text: `${via}: ${w.raw} (nicht auflösbar${detail})`, kind: why.kind, construct: why.construct, word: w.raw, prefix })
+}
+
+/** Eine Variable setzen; bleibt ihr Wert unbekannt, wird festgehalten, warum. */
+function setVar(st: State, name: string, vals: Val[] | null, why: () => Cause): void {
+  st.vars.set(name, vals)
+  if (vals) st.why?.delete(name)
+  else (st.why ??= new Map()).set(name, why())
 }
 
 /** $(pwd), $(dirname X), $(realpath X), $(cd X && pwd): gängige Pfad-Ausdrücke. */
@@ -350,7 +641,7 @@ function pathArgs(args: Word[], st: State, run: Run, via: string, mode: Mode, va
     const w = args[i]
     if (!w) continue
     const vals = expand(w, st, run.ctx)
-    if (vals === null) { run.out.unknowns.push(`${via}: ${w.raw} (nicht auflösbar)`); continue }
+    if (vals === null) { gapFor(run.out, via, w, st, run.ctx); continue }
     for (const v of vals) {
       if (opts && v.s === '--') { opts = false; continue }
       if (opts && v.s.startsWith('-') && v.s.length > 1) {
@@ -512,13 +803,19 @@ const INTERP: Record<string, string[]> = {
   perl: ['-e', '-E'], ruby: ['-e'], php: ['-r'],
 }
 
+const LEAD_KEYWORDS = new Set(['do', 'then', 'else', '{', '!', 'if', 'elif', 'while', 'until'])
+
 function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void {
   const { ctx, out } = run
   scanSubs(words0, st, run)
 
-  // Zuweisungen am Anfang: alleinstehend = Shell-Variable.
+  // Zuweisungen am Anfang: alleinstehend = Shell-Variable. Ein Schlüsselwort
+  // davor (`do n=…`, `then x=…`, `{ y=…`) gehört nicht zur Zuweisung.
   const assigns: [string, Word][] = []
   let k = 0
+  while (k < words0.length && LEAD_KEYWORDS.has(one(words0[k], st, ctx) ?? '')) k++
+  words0 = words0.slice(k)
+  k = 0
   for (; k < words0.length; k++) {
     const w = words0[k]
     const p0 = w?.parts[0]
@@ -527,7 +824,7 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
     assigns.push([m[1] ?? '', { raw: w.raw, parts: [{ ...p0, v: p0.v.slice(m[0].length) }, ...w.parts.slice(1)] }])
   }
   if (k === words0.length) {
-    for (const [n, w] of assigns) st.vars.set(n, expand(w, st, ctx))
+    for (const [n, w] of assigns) setVar(st, n, expand(w, st, ctx), () => cause(w, st, ctx).why)
     return
   }
 
@@ -535,7 +832,11 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
   if (!words.length) return
   const head = one(words[0], st, ctx)
   if (head === null) {
-    if (/rm|del|unlink|shred|trash|remove/i.test(words[0]?.raw ?? '')) out.unknowns.push(`Befehl nicht auflösbar: ${words[0]?.raw}`)
+    const w = words[0]
+    if (w && /rm|del|unlink|shred|trash|remove/i.test(w.raw)) {
+      const { why } = cause(w, st, ctx)
+      addGap(out, { text: `Befehl nicht auflösbar: ${w.raw}`, kind: why.kind, construct: why.construct, word: w.raw })
+    }
     return
   }
   const name = nameOf(head)
@@ -545,26 +846,33 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
     for (const w of args) {
       const p0 = w.parts[0]
       const m = p0?.t === 'lit' ? /^([A-Za-z_]\w*)=/.exec(p0.v) : null
-      if (m && p0 && p0.t === 'lit') st.vars.set(m[1] ?? '', expand({ raw: w.raw, parts: [{ ...p0, v: p0.v.slice(m[0].length) }, ...w.parts.slice(1)] }, st, ctx))
+      if (m && p0 && p0.t === 'lit') {
+        const rhs: Word = { raw: w.raw, parts: [{ ...p0, v: p0.v.slice(m[0].length) }, ...w.parts.slice(1)] }
+        setVar(st, m[1] ?? '', expand(rhs, st, ctx), () => cause(rhs, st, ctx).why)
+      }
     }
     return
   }
   if (name === 'read' || name === 'mapfile' || name === 'readarray') {
-    for (const w of args) { const s = one(w, st, ctx); if (s && /^[A-Za-z_]\w*$/.test(s)) st.vars.set(s, null) }
+    for (const w of args) {
+      const s = one(w, st, ctx)
+      if (s && /^[A-Za-z_]\w*$/.test(s)) setVar(st, s, null, () => ({ kind: 'input', construct: name, word: `${name} ${s}` }))
+    }
     return
   }
   if (name === 'for') {
     const v = one(args[0], st, ctx)
     if (v && one(args[1], st, ctx) === 'in') {
       const vals: Val[] = []
-      let known = true
+      let failed: Word | null = null
       for (const w of args.slice(2)) {
         const x = expand(w, st, ctx)
-        if (!x) { known = false; break }
+        if (!x) { failed = w; break }
         vals.push(...x)
       }
-      st.vars.set(v, known ? vals : null)
-    } else if (v) st.vars.set(v, null)
+      const bad = failed
+      setVar(st, v, bad ? null : vals, () => (bad ? cause(bad, st, ctx).why : { kind: 'other', construct: 'for', word: v }))
+    } else if (v) setVar(st, v, null, () => ({ kind: 'input', construct: 'for ohne in', word: `for ${v}` }))
     return
   }
   if (name === 'cd' || name === 'pushd' || name === 'chdir') {
@@ -583,7 +891,7 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
     const valued = name === 'shred' ? new Set(['-n', '-s', '--iterations', '--size', '--random-source']) : new Set<string>()
     pathArgs(args, st, run, name, 'exact', valued)
     if (piped !== undefined) {
-      if (piped === null) out.unknowns.push(`${name}: Eingabe aus der Pipeline nicht bestimmbar`)
+      if (piped === null) addGap(out, { text: `${name}: Eingabe aus der Pipeline nicht bestimmbar`, kind: 'input', construct: `Pipeline → ${name}`, word: name })
       else out.targets.push(...piped.map(t => ({ ...t, via: name })))
     }
     return
@@ -635,7 +943,14 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
   if (/^mkfs(\.|$)|^wipefs$|^mke2fs$/.test(name)) return pathArgs(args, st, run, name, 'exact', new Set(['-t', '-L', '-b', '-n', '-O', '-o']))
   if (name === 'eval') {
     const parts: string[] = []
-    for (const w of args) { const s = one(w, st, ctx); if (s === null) return void out.unknowns.push(`eval mit unbekanntem Inhalt: ${w.raw}`); parts.push(s) }
+    for (const w of args) {
+      const s = one(w, st, ctx)
+      if (s === null) {
+        const { why } = cause(w, st, ctx)
+        return void addGap(out, { text: `eval mit unbekanntem Inhalt: ${w.raw}`, kind: why.kind, construct: why.construct, word: w.raw })
+      }
+      parts.push(s)
+    }
     return analyzeIn(parts.join(' '), st, run)
   }
   if (SHELLS.has(name) || name === 'wsl' || name === 'wsl.exe') return shellCmd(name, cmd, args, st, run)
@@ -686,7 +1001,7 @@ function findCmd(args: Word[], st: State, run: Run): void {
   if (!starts.length) return addTarget(run.out, { s: '.', glob: false }, st, ctx, 'find', 'children', false)
   for (const w of starts) {
     const vals = expand(w, st, ctx)
-    if (!vals) { run.out.unknowns.push(`find: ${w.raw} (nicht auflösbar)`); continue }
+    if (!vals) { gapFor(run.out, 'find', w, st, ctx); continue }
     for (const v of vals) addTarget(run.out, v, st, ctx, 'find', v.glob ? 'exact' : 'children', false)
   }
 }
@@ -723,7 +1038,7 @@ function gitCmd(args: Word[], st: State, run: Run): void {
   }
   const sub = one(args[i], st, ctx)
   const rest = args.slice(i + 1)
-  const sub2 = { cwd: dir, vars: st.vars, stack: [], pipe: undefined } satisfies State
+  const sub2 = { cwd: dir, vars: st.vars, stack: [], pipe: undefined, why: st.why } satisfies State
   const flags = rest.map(w => one(w, st, ctx) ?? '')
   if (sub === 'clean') {
     if (flags.some(f => f === '-n' || f === '--dry-run')) return

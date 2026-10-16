@@ -1,6 +1,6 @@
 {
   "name": "delete-guard",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "Deleting outside the project folder requires the user's approval (Bash, PowerShell, cmd, subagents, MCP).",
   "author": {
     "name": "systemNEO"
@@ -20,6 +20,19 @@
       "title": "Allowed folders",
       "description": "More folders inside which deleting needs no approval, in addition to the boundary, separated by commas, e.g. /tmp, ~/Downloads. An absolute path or ~/…. \"Immer erlauben\" (always allow) in the dialog adds folders here.",
       "default": ""
+    },
+    "unresolved": {
+      "type": "string",
+      "title": "Unresolvable targets",
+      "description": "When a delete target cannot be worked out from the command (computed paths, loops, $(…)): \"ki\" lets a model work it out and the mod checks the result with its own rules (no question if everything is inside); \"fragen\" always asks; \"liste\" refuses the call and tells Claude to pass an explicit list of paths.",
+      "options": ["ki", "fragen", "liste"],
+      "default": "ki"
+    },
+    "aiModel": {
+      "type": "string",
+      "title": "Model for the AI check",
+      "description": "Model alias or id used when \"Unresolvable targets\" is \"ki\", e.g. sonnet, haiku, opus.",
+      "default": "sonnet"
     }
   }
 }

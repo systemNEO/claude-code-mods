@@ -48,6 +48,8 @@ Sessions that are already running pick up the mod with `/reload-plugins`.
 | --- | --- | --- |
 | `boundary` | empty | The folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or `~` for your home folder, e.g. `~`, `~/projects`, `/srv/work`; on Windows `~\projects` or `C:\Users\you\projects`. |
 | `allowedFolders` | empty | More folders inside which deleting needs no approval, **in addition** to the boundary, e.g. `/tmp`, `~/Downloads`; on Windows `C:\Temp`, `~\Downloads`. Separate several with commas. *Immer erlauben* in the dialog adds folders here (see below). |
+| `unresolved` | `ki` | What happens when a target cannot be worked out from the command text: `ki` (a model works it out, the mod checks the answer), `fragen` (always the dialog), `liste` (refuse and ask Claude for an explicit list of paths). See [Targets it cannot work out](#targets-it-cannot-work-out). |
+| `aiModel` | `sonnet` | The model for `unresolved: ki`, as an alias (`sonnet`, `haiku`, `opus`) or a full id. |
 
 The boundary **replaces** the start folder; it does not add to it. With
 `~/projects`, a session started in `~/projects/app` may delete anywhere in
@@ -207,7 +209,7 @@ started in, or the folder set in [Configuration](#configuration).
 | --- | --- |
 | Every target lies inside the start folder | No dialog. The usual rules and permission mode decide, as without the mod. |
 | A target lies outside the start folder | Dialog listing the outside targets and the command. |
-| A target cannot be determined (a variable without a value, `$(cat list)`, `cat list \| xargs rm`, `Invoke-Expression $x`, `cd -`) | Treated as outside: dialog. |
+| A target cannot be determined (a variable without a value, `$(cat list)`, `cat list \| xargs rm`, `Invoke-Expression $x`, `cd -`) | Depends on `unresolved`: AI check, then dialog if anything is left (default); always the dialog; or refused with a request for an explicit list. See [Targets it cannot work out](#targets-it-cannot-work-out). |
 | The target is the start folder itself (`rm -rf .`, `rm -rf /path/to/project`) | Treated as outside: dialog. |
 | Wildcards (`*`, `?`, `[…]`, `{a,b}`) | What counts is the folder before the first wildcard: `../*` is the contents of `..` (outside), `build/*` the contents of `build` (inside). |
 | `.*` with `find` and others | May match `..` in some shells, so the parent folder counts too. |
@@ -229,6 +231,82 @@ started in, or the folder set in [Configuration](#configuration).
 | Scripts started by the command (`bash x.sh`, `./x.sh`, `source x.sh`, `.\x.ps1`, `x.cmd`) | Read and checked one level deep if they lie in the project or a temp folder. Installed tools elsewhere (e.g. `~/.nvm/nvm.sh`) are not read. |
 | MCP tools with `delete`/`remove`/`unlink`/`rmdir`/`trash`/`erase` in their name | Their path arguments are checked like `rm -r`. Such tools without path arguments (e.g. deleting a cloud document) are left alone. |
 
+## What the dialog shows
+
+For every target outside, the dialog says what is actually there, so you can
+judge the size of what goes:
+
+```
+• rm: /tmp/x/vgl/1280-hell-2 (Inhalt)
+  ↳ ganzer Inhalt des Ordners: 14 Dateien, 2 Ordner, 3,1 MB — z. B. a.png, b.png, sub/, …
+• rm: /srv/data/old
+  ↳ ganzer Ordner samt Inhalt: mehr als 20.000 Dateien, 312 Ordner, 4,2 GB — z. B. …
+```
+
+It tells apart the whole contents of a folder, a pattern that matches only
+part of it (`3 von 40 Einträgen (Muster *.png)`), `*` that leaves hidden
+entries alone, a whole folder with everything in it, a single file, a link
+(only the link goes), and a target that does not exist. Counting stops after
+20,000 entries or 2.5 seconds and then says "mehr als". Up to four names are
+listed as a sample.
+
+## Targets it cannot work out
+
+Some deletions are computed when the command runs: a variable read from a
+file, `$(ls …)`, `${!ref}`, a pipeline into `xargs rm`. The option
+`unresolved` decides what happens then.
+
+**`ki` (default): a model works it out, the mod checks the answer.** The mod
+sends the command and the list of open targets to the model set in `aiModel`
+(through Claude Code's own client, as a separate request with no history and
+no tools). The model answers in JSON: the concrete paths for each open target
+and whether they follow from the command text alone. The mod then checks that
+answer itself, and the call goes through without a question only if every
+check passes:
+
+- every open target is answered and marked certain; anything that depends on
+  file contents, listings, program output, input or unknown variables counts
+  as not certain;
+- every path is absolute, with no variables or `~` left in it;
+- every path starts with the part of the word the mod already knows: for
+  `rm -rf "$S/vgl/$n/*"` with a known `S`, every answer must start with
+  `$S/vgl/`; an answer that leaves that prefix, also through `..`, is rejected;
+- every path, checked with the same rules as any other target (symlinks
+  included), lies inside the boundary or an allowed folder;
+- no other target of the command lies outside.
+
+It then shows a toast (*KI-geprüft, alles im freien Bereich: …*) and writes a
+line to the transcript. In every other case the dialog opens, now with what
+the model found for each open target (with the preview) and why it was not
+enough. The command is passed to the model as data; text in it that addresses
+the model is to be ignored, and the checks above do not rely on the model's
+judgement. The residual risk is a model that names a wrong value which still
+passes every check; the answer is cached per command for the session.
+
+**`fragen`:** no model, always the dialog.
+
+**`liste`:** the call is refused, and Claude is told to work out the paths
+first and then call `rm` / `Remove-Item` with an explicit list of finished
+paths. Known targets outside still get the dialog as usual.
+
+### Learning from what it could not work out
+
+Every open target is logged with its cause (kind and construct, for example
+`param-op ${!…}`, `subst $(ls …)`, `env $OUT`, `input read`), a count and an
+example command. The log stays on this machine (the mod's own store).
+
+`/delete-guard-lernen` hands the log to Claude as a task: find the working
+copy of this repository, extend the parser for every cause that can be worked
+out from the command text alone (with tests for inside, outside and a way out
+through the new construct), leave causes that depend on run time as they are,
+run the tests, bump the version, and ask before committing.
+`/delete-guard-lernen leeren` clears the log.
+
+The mod never changes its own code. A deletion guard that rewrites its rules
+unattended could be talked out of its job; the change goes through Claude, the
+tests and your approval. At the start of each session the mod checks the
+logged examples again and drops what it can now work out by itself.
+
 ## Commands
 
 | Environment | Commands that count as deleting |
@@ -241,8 +319,14 @@ started in, or the folder set in [Configuration](#configuration).
 
 Paths are resolved the way the shell would: `~`, `$HOME`, `$env:TEMP`,
 `%APPDATA%` and other environment variables, assignments earlier in the
-command, `for` loops, `$(pwd)`, `$(dirname "$0")`, `$(cd dir && pwd)`,
-`Join-Path`.
+command (also after `do`, `then`, `{`), `for` loops, `$(pwd)`,
+`$(dirname "$0")`, `$(cd dir && pwd)`, `Join-Path`, and the Bash parameter
+operators on known values: `${v#pat}`, `${v##pat}`, `${v%pat}`, `${v%%pat}`,
+`${v/pat/rep}`, `${v//pat/rep}`, `${v/#pat/rep}`, `${v/%pat/rep}`,
+`${v:off:len}`, `${#v}`, `${v^^}`, `${v,,}`, `${v:+alt}`, `${v:?msg}`.
+Patterns are read as globs; quoted parts match literally. What cannot be
+reproduced exactly (extglob, `&` in a replacement, `${!ref}`, arrays,
+`$((…))`) stays unknown.
 
 Every other command runs as normal.
 
@@ -339,7 +423,11 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
   holds a call; it does not sandbox it.
 - Some harmless commands ask too: a `cd` that might fail
   (`cd dir; rm ../x`), a variable whose value it cannot know (`rm -rf "$OUT"`
-  with `OUT` set outside the command), `rm -rf "$(mktemp -d)"`.
+  with `OUT` set outside the command), `rm -rf "$(mktemp -d)"`. With
+  `unresolved: ki`, many of these pass after the AI check.
+- The AI check costs one model request per new command with open targets
+  (cached for the session) and holds the call until the answer arrives, at
+  most 45 seconds.
 - If the check itself fails, the call is denied. A rare parsing problem can
   therefore block a legitimate command.
 
@@ -378,8 +466,14 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - A `session.start` hook schedules the daily update check with `$.clock.after`,
   so it never delays the start of a session; `$.store` remembers the last check.
 - The parsers for Bash, PowerShell and cmd (`hooks/bash.ts`, `hooks/ps.ts`) are
-  pure functions without `$`, tested with about 230 cases in `tests/`.
-  Nothing in the tests is executed; they only analyse command text.
+  pure functions without `$`. Each target they cannot work out is reported
+  with its cause and the known start of the path.
+- The AI check uses `$.model.complete`; the dialog's preview uses `$.fs.list`
+  and `$.fs.stat`; the learning log lives in `$.store`; `/delete-guard-lernen`
+  is a command registered at `session.start`, which hands its task over with
+  `$.prompt.submit` just after the command returns.
+- About 270 cases in `tests/`. Nothing in the tests is executed; they only
+  analyse command text, and the model is a fixed answer.
 
 ## Development
 

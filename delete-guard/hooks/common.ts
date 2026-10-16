@@ -25,7 +25,32 @@ export type Ctx = {
  */
 export type Mode = 'exact' | 'deep' | 'children'
 
-export type Target = { path: string; mode: Mode; via: string }
+/** `pattern`: bei Platzhaltern der Rest ab dem Ordner (`*.png`, `a?/x`), für die Vorschau. */
+export type Target = { path: string; mode: Mode; via: string; pattern?: string }
+
+/**
+ * Warum sich ein Ziel nicht bestimmen ließ. `kind` ordnet die Ursache ein (das
+ * Lernprotokoll zählt danach), `construct` ist die Stelle im Befehl, `prefix`
+ * der sicher bekannte Anfang des Pfads (absolut), an dem sich eine KI-Auskunft
+ * messen lassen muss.
+ */
+export type Gap = {
+  text: string
+  kind: GapKind
+  construct: string
+  word?: string
+  prefix?: string
+}
+
+export type GapKind =
+  | 'param-op' // ${v…} in einer Form, die der Parser nicht kennt
+  | 'arith' // $(( … ))
+  | 'subst' // $( … ), dessen Ausgabe sich nicht vorhersagen lässt
+  | 'env' // Umgebungsvariable, deren Wert der Mod nicht kennt
+  | 'input' // read, mapfile, Pipeline: erst zur Laufzeit bekannt
+  | 'cwd' // aktueller Ordner unbekannt
+  | 'variants' // zu viele Varianten ({a,b}, lange Listen)
+  | 'other'
 
 /** Ein Skript, das der Befehl ausführt und das register.ts nachliest. */
 export type ScriptRef = { path: string; lang: Lang }
@@ -36,6 +61,8 @@ export type Out = {
   targets: Target[]
   /** Löschungen, deren Ziel sich nicht bestimmen lässt. */
   unknowns: string[]
+  /** Zu einem Teil der `unknowns` die Ursache (über `text` zugeordnet). */
+  gaps?: Gap[]
   scripts: ScriptRef[]
 }
 
@@ -53,12 +80,14 @@ export type State = {
    * auf das kein `&&` folgt, läuft der Rest auch dann, wenn der `cd` scheiterte.
    */
   alts?: string[]
+  /** Zu Variablen mit unbekanntem Wert (null in `vars`): warum. */
+  why?: Map<string, Omit<Gap, 'text'>>
 }
 
 /** Ein ausgewerteter Wortwert. `glob`: enthält unquotierte Platzhalter. */
 export type Val = { s: string; glob: boolean }
 
-export const newOut = (): Out => ({ targets: [], unknowns: [], scripts: [] })
+export const newOut = (): Out => ({ targets: [], unknowns: [], gaps: [], scripts: [] })
 
 export const fork = (st: State): State => ({
   cwd: st.cwd,
@@ -66,7 +95,14 @@ export const fork = (st: State): State => ({
   stack: [...st.stack],
   pipe: st.pipe,
   alts: st.alts ? [...st.alts] : undefined,
+  why: st.why ? new Map(st.why) : undefined,
 })
+
+/** Eine Lücke melden: als Text für den Dialog und mit Ursache für KI und Lernprotokoll. */
+export function addGap(out: Out, gap: Gap): void {
+  out.unknowns.push(gap.text)
+  ;(out.gaps ??= []).push(gap)
+}
 
 const DRIVE = /^([A-Za-z]):(?:\/|$)/
 const PROVIDER = /^([A-Za-z][A-Za-z0-9.]+):/
@@ -173,8 +209,8 @@ export function addTarget(
     const seg = s.slice(cut + 1).split('/')[0] ?? ''
     for (const base of [st.cwd, ...(st.alts ?? [])]) {
       const abs = absolute(dir, base, ctx, winSyntax)
-      if (abs === null) { out.unknowns.push(`${via}: ${v.s} (Ordner unbekannt)`); continue }
-      out.targets.push({ path: abs, mode: 'children', via })
+      if (abs === null) { addGap(out, { text: `${via}: ${v.s} (Ordner unbekannt)`, kind: 'cwd', construct: 'cd', word: v.s }); continue }
+      out.targets.push({ path: abs, mode: 'children', via, pattern: s.slice(cut + 1) })
       if (!dotdotSafe && /^\.[*?[]/.test(seg)) out.targets.push({ path: parentOf(abs), mode: 'children', via })
     }
     return
@@ -182,7 +218,7 @@ export function addTarget(
   const trailing = /[\\/]\.?$/.test(v.s)
   for (const base of [st.cwd, ...(st.alts ?? [])]) {
     const abs = absolute(v.s, base, ctx, winSyntax)
-    if (abs === null) { out.unknowns.push(`${via}: ${v.s} (aktueller Ordner unbekannt)`); continue }
+    if (abs === null) { addGap(out, { text: `${via}: ${v.s} (aktueller Ordner unbekannt)`, kind: 'cwd', construct: 'cd', word: v.s }); continue }
     out.targets.push({ path: abs, mode: trailing && mode === 'exact' ? 'deep' : mode, via })
   }
 }

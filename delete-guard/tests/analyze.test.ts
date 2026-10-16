@@ -186,13 +186,126 @@ describe('Ziel-Arten', () => {
     expect(check('rm -rf link/').targets.map(t => t.mode)).toEqual(['deep'])
   })
   test('rm *: Inhalt des Ordners', () => {
-    expect(check('rm -rf *').targets).toEqual([{ path: '/home/u/proj', mode: 'children', via: 'rm' }])
+    expect(check('rm -rf *').targets).toEqual([{ path: '/home/u/proj', mode: 'children', via: 'rm', pattern: '*' }])
+  })
+  test('Muster bleibt für die Vorschau erhalten', () => {
+    expect(check('rm out/*.png').targets).toEqual([{ path: '/home/u/proj/out', mode: 'children', via: 'rm', pattern: '*.png' }])
+  })
+})
+
+// Parameter-Operatoren: reine Textarbeit auf bekannten Werten, ohne Ausführen.
+describe('Parameter-Operatoren', () => {
+  const S = '/tmp/claude-1000/x/scratchpad'
+  const val = (src: string) => {
+    const r = check(`${src}; rm -rf "/home/u/proj/$R"`)
+    return r.unknowns.length ? null : r.targets.map(t => t.path.slice('/home/u/proj/'.length))
+  }
+  test('Der Fall aus der Praxis: for-Liste + ${c%%:*}', () => {
+    const r = check(`S=${S}; for c in "1280-hell-2:{\\"w\\":1}" "390-dunkel-7:{\\"w\\":2}"; do n=\${c%%:*}; rm -rf $S/vgl/$n/*; done`)
+    expect(r.unknowns).toEqual([])
+    expect(r.targets.map(t => t.path)).toEqual([`${S}/vgl/1280-hell-2`, `${S}/vgl/390-dunkel-7`])
+  })
+  test('# ## % %%', () => {
+    expect(val('X=a/b/c.tar.gz; R=${X#*/}')).toEqual(['b/c.tar.gz'])
+    expect(val('X=a/b/c.tar.gz; R=${X##*/}')).toEqual(['c.tar.gz'])
+    expect(val('X=a/b/c.tar.gz; R=${X%.*}')).toEqual(['a/b/c.tar'])
+    expect(val('X=a/b/c.tar.gz; R=${X%%.*}')).toEqual(['a/b/c'])
+    expect(val('X=abc; R=${X%x}')).toEqual(['abc'])
+  })
+  test('angeführtes Muster gilt wörtlich', () => {
+    expect(val('X=a*b; R=${X%"*b"}')).toEqual(['a'])
+    expect(val('X=axb; R=${X%"*b"}')).toEqual(['axb'])
+  })
+  test('Muster aus einer Variablen', () => {
+    expect(val('E=.png; X=bild.png; R=${X%$E}')).toEqual(['bild'])
+  })
+  test('Ersetzen / // /# /%', () => {
+    expect(val('X=a-b-c; R=${X/-/_}')).toEqual(['a_b-c'])
+    expect(val('X=a-b-c; R=${X//-/_}')).toEqual(['a_b_c'])
+    expect(val('X=a-b-a; R=${X/#a/z}')).toEqual(['z-b-a'])
+    expect(val('X=a-b-a; R=${X/%a/z}')).toEqual(['a-b-z'])
+    expect(val('X=a-b; R=${X//-}')).toEqual(['ab'])
+    expect(val('X=a.b; R=${X/#/pre_}')).toEqual(['pre_a.b'])
+  })
+  test('Teilstring, Länge, Groß/Klein', () => {
+    expect(val('X=abcdef; R=${X:2}')).toEqual(['cdef'])
+    expect(val('X=abcdef; R=${X:1:3}')).toEqual(['bcd'])
+    expect(val('X=abcdef; R=${X: -2}')).toEqual(['ef'])
+    expect(val('X=abcdef; R=${#X}')).toEqual(['6'])
+    expect(val('X=Abc; R=${X^^}')).toEqual(['ABC'])
+    expect(val('X=Abc; R=${X,,}')).toEqual(['abc'])
+  })
+  test('${v:+x} und ${v:?msg}', () => {
+    expect(val('X=a; R=${X:+gesetzt}')).toEqual(['gesetzt'])
+    expect(val('X=; R=a${X:+gesetzt}')).toEqual(['a'])
+    expect(val('X=a; R=${X:?fehlt}')).toEqual(['a'])
+  })
+  test('mehrere Werte aus der for-Schleife', () => {
+    expect(check('for f in a.log b.log; do rm -rf "${f%.log}.tmp"; done').targets.map(t => t.path))
+      .toEqual(['/home/u/proj/a.tmp', '/home/u/proj/b.tmp'])
+  })
+  // Was sich nicht sicher nachbilden lässt, bleibt unbekannt.
+  asks('X=a; rm -rf "/tmp/${X/a/&}"')
+  asks('X=a; rm -rf "/tmp/${X%@(a|b)}"')
+  asks('rm -rf "/tmp/${!REF}"')
+  asks('rm -rf "/tmp/${ARR[0]}"')
+  asks('rm -rf /tmp/$((1+1))')
+  // Operatoren können nach außen führen: wird erkannt.
+  asks('X=/etc/passwd.bak; rm -rf "${X%.bak}"')
+  free('X=build/out.bak; rm -rf "${X%.bak}"')
+  asks('X=build/..; rm -rf "${X}/../x"')
+})
+
+// Nach Befehlen aus einer echten Sitzung (Pfade und Namen neutralisiert), die vorher eine Rückfrage auslösten.
+describe('Praxisbefehle', () => {
+  const S = '/tmp/s'
+  test('for-Liste mit JSON, ${c%%:*} und ${c#*:}: alle vier Ziele bekannt', () => {
+    const cmd = `S=${S}; cd /home/u/proj; for c in "1280-hell-2:{\\"width\\":1280,\\"dark\\":false,\\"methods\\":2}" "1280-hell-7:{\\"width\\":1280,\\"dark\\":false,\\"methods\\":7}" "390-dunkel-2:{\\"width\\":390,\\"dark\\":true,\\"methods\\":2}" "390-dunkel-7:{\\"width\\":390,\\"dark\\":true,\\"methods\\":7}"; do n=\${c%%:*}; o=\${c#*:}; mkdir -p $S/vgl/$n; rm -f $S/vgl/$n/*; timeout 300 bash scripts/run.sh node $S/compare.cjs $S/vgl/$n "$o" 2>&1 | grep -v '^ *[{}\\[]' | grep -v '": "XY' ; echo "$n: $(ls $S/vgl/$n | tr '\\n' ' ')"; done`
+    const r = check(cmd)
+    expect(r.unknowns).toEqual([])
+    expect(r.targets.filter(t => t.via === 'rm').map(t => `${t.path}|${t.pattern}`))
+      .toEqual(['1280-hell-2', '1280-hell-7', '390-dunkel-2', '390-dunkel-7'].map(n => `${S}/vgl/${n}|*`))
+  })
+  test('$(echo $v | tr …) bleibt offen, mit bekanntem Anfang für die KI', () => {
+    const out = newOut()
+    const cmd = `S=${S}; for v in "1.234,56" "1.234"; do n=p0-$(echo $v | tr -d '.,'); mkdir -p $S/vgl/$n; rm -f $S/vgl/$n/*; done`
+    lang.bash(cmd, { cwd: LINUX.root, vars: new Map(), stack: [] }, { ctx: LINUX, out, depth: 0 })
+    // Sicher bekannt ist nur der Anfang des rm-Worts; was in $n vor der Ersetzung steht, nicht.
+    expect(out.gaps?.[0]).toMatchObject({ kind: 'subst', construct: '$(echo …)', prefix: `${S}/vgl/` })
+  })
+})
+
+describe('Ursachen und bekannter Anfang (für KI und Lernprotokoll)', () => {
+  const gaps = (src: string) => {
+    const out = newOut()
+    lang.bash(src, { cwd: LINUX.root, vars: new Map(), stack: [] }, { ctx: LINUX, out, depth: 0 })
+    return out.gaps ?? []
+  }
+  test('Variable aus nicht unterstütztem Operator: Ursache wandert mit', () => {
+    const [g] = gaps('S=/tmp/s; n=${!c}; rm -rf $S/vgl/$n/*')
+    expect(g?.kind).toBe('param-op')
+    expect(g?.construct).toBe('${!…}')
+    expect(g?.prefix).toBe('/tmp/s/vgl/')
+    expect(g?.text).toContain('$n ← ${!c}')
+  })
+  test('Umgebungsvariable', () => {
+    const [g] = gaps('rm -rf "$SOMEWHERE/x"')
+    expect({ kind: g?.kind, construct: g?.construct, prefix: g?.prefix }).toEqual({ kind: 'env', construct: '$SOMEWHERE', prefix: undefined })
+  })
+  test('read: Laufzeit', () => {
+    expect(gaps('read d; rm -rf "build/$d"')[0]).toMatchObject({ kind: 'input', construct: 'read', prefix: '/home/u/proj/build/' })
+  })
+  test('Befehlsersetzung', () => {
+    expect(gaps('rm -rf "$(cat list.txt)"')[0]).toMatchObject({ kind: 'subst', construct: '$(cat …)' })
+  })
+  test('Arithmetik', () => {
+    expect(gaps('rm -rf /tmp/n$((1+1))')[0]).toMatchObject({ kind: 'arith', construct: '$((…))', prefix: '/tmp/n' })
   })
 })
 
 describe('Windows-Platzhalter und .Delete()', () => {
   test('C:\\Windows\\Temp\\* ist der Inhalt von C:/Windows/Temp', () => {
-    expect(check('Remove-Item C:\\Windows\\Temp\\* -Recurse', 'ps', WIN).targets).toEqual([{ path: 'C:/Windows/Temp', mode: 'children', via: 'remove-item' }])
+    expect(check('Remove-Item C:\\Windows\\Temp\\* -Recurse', 'ps', WIN).targets).toEqual([{ path: 'C:/Windows/Temp', mode: 'children', via: 'remove-item', pattern: '*' }])
   })
   test('(Get-Item C:\\x).Delete() trifft C:/x', () => {
     const r = check('(Get-Item C:\\x).Delete()', 'ps', WIN)
