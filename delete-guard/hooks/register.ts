@@ -72,14 +72,34 @@ function analyze(src: string, which: Lang, cwd: string, ctx: Ctx, script?: strin
   return out
 }
 
+/** Prüfsumme eines Texts (zwei 53-Bit-Hashes): erkennt, ob ein Skript sich seit der Freigabe geändert hat. */
+function digest(s: string): string {
+  const one = (seed: number) => {
+    let h1 = 0xdeadbeef ^ seed
+    let h2 = 0x41c6ce57 ^ seed
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i)
+      h1 = Math.imul(h1 ^ c, 2654435761)
+      h2 = Math.imul(h2 ^ c, 1597334677)
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16)
+  }
+  return `${one(0)}${one(0x9e3779b9)}`
+}
+
 /**
  * Skripte, die der Befehl startet, eine Ebene tief mitlesen: solche im
  * Projekt und in Temp-Ordnern (wo ein Agent sich eins ablegen würde), nicht
  * aber installierte Werkzeuge wie ~/.nvm/nvm.sh, deren Funktionen voller
  * `rm "$var"` stecken, ohne dass ein `source` sie ausführt.
+ * Gibt je gelesenem Skript einen Fingerabdruck zurück (Pfad und Inhalt), für
+ * „Immer erlauben (genau dieser Befehl)“.
  */
-async function followScripts($: EngineInterface, out: Out, cwd: string, ctx: Ctx): Promise<void> {
+async function followScripts($: EngineInterface, out: Out, cwd: string, ctx: Ctx): Promise<string[]> {
   const seen = new Set<string>()
+  const prints: string[] = []
   const temp = ['/tmp', '/var/tmp', ctx.env('TMPDIR'), ctx.env('TEMP'), ctx.env('TMP')]
     .flatMap(t => (t ? [absolute(t, null, ctx, ctx.win)] : []))
     .filter((t): t is string => t !== null)
@@ -90,18 +110,23 @@ async function followScripts($: EngineInterface, out: Out, cwd: string, ctx: Ctx
     try {
       const stat = await $.fs.stat(s.path)
       if (stat.kind !== 'file' || stat.size > MAX_SCRIPT) {
+        prints.push(`${s.path} ${stat.kind} ${stat.size} ${stat.mtimeMs}`)
         if (stat.kind === 'file') out.unknowns.push(`Skript zu groß zum Prüfen: ${s.path}`)
         continue
       }
       const text = await $.fs.read(s.path)
-      const sub = analyze(typeof text === 'string' ? text : '', s.lang, cwd, ctx, s.path)
+      const src = typeof text === 'string' ? text : ''
+      prints.push(`${s.path} ${digest(src)}`)
+      const sub = analyze(src, s.lang, cwd, ctx, s.path)
       out.targets.push(...sub.targets.map(t => ({ ...t, via: `${baseName(s.path)}: ${t.via}` })))
       out.unknowns.push(...sub.unknowns.map(u => `${baseName(s.path)}: ${u}`))
       ;(out.gaps ??= []).push(...(sub.gaps ?? []).map(g => ({ ...g, text: `${baseName(s.path)}: ${g.text}` })))
     } catch {
       // Gibt es nicht oder ist nicht lesbar: dann führt der Befehl es auch nicht aus.
+      prints.push(`${s.path} fehlt`)
     }
   }
+  return prints
 }
 
 async function realPath($: EngineInterface, p: string, win: boolean): Promise<string | undefined> {
@@ -149,6 +174,8 @@ type Findings = {
   remember: string[] | null
   /** Was die KI-Prüfung ergab, falls sie lief. */
   ai?: AiReview
+  /** Nur bei Shell-Befehlen: was „Immer erlauben (genau dieser Befehl)“ speichern würde. */
+  exact?: TrustedCommand
 }
 
 /** Pfade in einem Meldungstext unkenntlich machen: fürs Lernprotokoll zählt die Art, nicht der Ort. */
@@ -170,7 +197,7 @@ function rememberFor(outsideTargets: readonly Target[], unknowns: number, ctx: C
 async function findings($: EngineInterface, src: string, which: Lang): Promise<Findings> {
   const { ctx, cwd } = await context($)
   const out = analyze(src, which, cwd, ctx)
-  await followScripts($, out, cwd, ctx)
+  const scripts = await followScripts($, out, cwd, ctx)
   const realRoots = await realFree($, ctx)
   const problems: string[] = []
   const outsideTargets: Target[] = []
@@ -186,7 +213,10 @@ async function findings($: EngineInterface, src: string, which: Lang): Promise<F
   }
   const unknowns = [...new Set(out.unknowns)]
   problems.push(...unknowns)
-  return { problems, ctx, cwd, outsideTargets, gaps: gapsOf(out, unknowns), remember: rememberFor(outsideTargets, unknowns.length, ctx) }
+  return {
+    problems, ctx, cwd, outsideTargets, gaps: gapsOf(out, unknowns), remember: rememberFor(outsideTargets, unknowns.length, ctx),
+    exact: { lang: which, cwd, command: src, scripts },
+  }
 }
 
 // ---------------------------------------------------------------- Vorschau
@@ -278,13 +308,18 @@ export async function preview($: EngineInterface, t: Target, deadline: number): 
 // was er selbst sicher weiß (absoluter Pfad, bekannter Anfang des Worts), und
 // prüft es mit denselben Regeln wie jedes andere Ziel. Nur wenn alles
 // innerhalb liegt, entfällt die Rückfrage.
+// Ausnahme „löscht nichts“ (z. B. `python3 -c` mit einem Dateinamen aus
+// `$(grep …)`, der nur gelesen wird): Das kann der Mod nicht nachprüfen; er
+// übernimmt es und sagt es mit Toast und Log-Zeile an (Entscheidung Nutzer).
 
-type AiGap = { nr: number; sicher: boolean; ziele: string[]; grund: string }
+type AiGap = { nr: number; sicher: boolean; nichts: boolean; ziele: string[]; grund: string }
 type AiReview = {
   /** Alle Lücken aufgelöst, alle Ziele geprüft und frei. */
   verified: boolean
   /** Je Lücke (Index wie `gaps`) die geprüften Ziele. */
   targets: Target[][]
+  /** Je Lücke: laut KI wird dort nichts gelöscht. */
+  nothing: boolean[]
   /** Warum es nicht reicht, oder dass die KI nicht verfügbar war. */
   notes: string[]
   explanation: string
@@ -311,8 +346,9 @@ Bestimme für jede Nummer die konkreten Pfade, die beim Ausführen gelöscht wü
 - "sicher": true nur, wenn die Werte allein aus dem Befehlstext folgen (Literale, Zuweisungen, Schleifenlisten, Textoperationen). Hängen sie von Dateiinhalten, Ordnerlisten, Ausgaben anderer Programme, Eingaben, Netz, Uhrzeit oder nicht angegebenen Umgebungsvariablen ab: "sicher": false.
 - Jeder Pfad absolut. Platzhalter wie * so lassen, wie der Befehl sie an das Löschprogramm übergibt. Bei Schleifen alle Werte.
 - Nichts erfinden: Lässt sich etwas nicht bestimmen, "sicher": false und im "grund" sagen, woran es liegt.
+- Löscht diese Stelle gar nichts: "sicher": true, "loescht_nichts": true, "ziele": []. Das gilt auch, wenn Werte erst zur Laufzeit feststehen, aber nur, wenn alles zugleich zutrifft: Der Code steht vollständig im Befehl; er enthält keinen Aufruf, der Dateien oder Ordner löscht, leert oder überschreibt, und startet keine Programme oder Shell-Befehle; unbekannte Werte dienen darin nur als Daten (z. B. ein Dateiname zum Lesen), nie als Code oder Befehl (eval, exec, compile, os.system, subprocess, sh -c, Backticks, dynamische Importe oder Attribute aus Text). Verschleierter oder nachgeladener Code (base64, Dekodieren, Download) ist nie "loescht_nichts".
 
-{"luecken":[{"nr":1,"sicher":true,"ziele":["/abs/pfad/*"],"grund":"kurz, deutsch"}],"erklaerung":"ein Satz, deutsch: was der Befehl löscht"}`
+{"luecken":[{"nr":1,"sicher":true,"loescht_nichts":false,"ziele":["/abs/pfad/*"],"grund":"kurz, deutsch"}],"erklaerung":"ein Satz, deutsch: was der Befehl löscht"}`
 }
 
 function parseAi(text: string): { luecken: AiGap[]; erklaerung: string } | null {
@@ -323,9 +359,9 @@ function parseAi(text: string): { luecken: AiGap[]; erklaerung: string } | null 
     const j = JSON.parse(text.slice(a, b + 1)) as { luecken?: unknown; erklaerung?: unknown }
     if (!Array.isArray(j.luecken)) return null
     const luecken = j.luecken.flatMap((x): AiGap[] => {
-      const o = x as Partial<AiGap>
+      const o = x as Partial<AiGap> & { loescht_nichts?: unknown }
       if (typeof o?.nr !== 'number' || !Array.isArray(o.ziele)) return []
-      return [{ nr: o.nr, sicher: o.sicher === true, ziele: o.ziele.filter((z): z is string => typeof z === 'string'), grund: typeof o.grund === 'string' ? o.grund : '' }]
+      return [{ nr: o.nr, sicher: o.sicher === true, nichts: o.loescht_nichts === true, ziele: o.ziele.filter((z): z is string => typeof z === 'string'), grund: typeof o.grund === 'string' ? o.grund : '' }]
     })
     return { luecken, erklaerung: typeof j.erklaerung === 'string' ? j.erklaerung : '' }
   } catch {
@@ -339,7 +375,7 @@ async function aiReview($: EngineInterface, command: string, which: Lang, f: Fin
   const key = `${which}\n${f.cwd}\n${command}`
   const hit = aiCache.get(key)
   if (hit) return hit
-  const fail = (note: string): AiReview => ({ verified: false, targets: f.gaps.map(() => []), notes: [note], explanation: '' })
+  const fail = (note: string): AiReview => ({ verified: false, targets: f.gaps.map(() => []), nothing: f.gaps.map(() => false), notes: [note], explanation: '' })
   let text: string
   try {
     const r = await $.model.complete({ model: aiModelOption, system: AI_SYSTEM, prompt: aiPrompt(command, which, f), maxTokens: 2000, timeoutMs: 45000 })
@@ -354,10 +390,14 @@ async function aiReview($: EngineInterface, command: string, which: Lang, f: Fin
   const st: State = { cwd: f.cwd, vars: new Map(), stack: [] }
   const notes: string[] = []
   const targets: Target[][] = []
+  const nothing: boolean[] = []
   for (const [i, g] of f.gaps.entries()) {
     const a = parsed.luecken.find(x => x.nr === i + 1)
     const mine: Target[] = []
     targets.push(mine)
+    // „Löscht nichts“ nur ohne Ziele; nennt die KI doch welche, werden sie geprüft wie sonst.
+    nothing.push(a?.sicher === true && a.nichts && !a.ziele.length)
+    if (nothing[i]) continue
     if (!a || !a.sicher || !a.ziele.length) { notes.push(`Nr. ${i + 1}: laut KI nicht sicher bestimmbar${a?.grund ? ` (${a.grund})` : ''}`); continue }
     for (const z of a.ziele) {
       // Nur fertige, absolute Pfade: keine Variablen, kein ~, nichts Relatives.
@@ -380,7 +420,7 @@ async function aiReview($: EngineInterface, command: string, which: Lang, f: Fin
       }
     }
   }
-  const review: AiReview = { verified: notes.length === 0, targets, notes, explanation: parsed.erklaerung }
+  const review: AiReview = { verified: notes.length === 0, targets, nothing, notes, explanation: parsed.erklaerung }
   if (aiCache.size >= 30) aiCache.delete(aiCache.keys().next().value ?? '')
   aiCache.set(key, review)
   return review
@@ -451,16 +491,23 @@ async function pruneLearned($: EngineInterface): Promise<string[]> {
 
 const LEARN_COMMAND = 'delete-guard-lernen'
 
-function learnTask(entries: readonly LearnEntry[], pluginRoot: string): string {
+function learnTask(entries: readonly LearnEntry[], pluginRoot: string, decisions: readonly Decision[]): string {
   const day = (ms: number) => new Date(ms).toLocaleDateString('de-DE')
   const list = entries.map((e, i) =>
     `${i + 1}. [${e.kind}] ${e.construct}: ${e.count}×, zuletzt ${day(e.last)}${e.ai ? `, KI: ${e.ai}` : ''}\n` +
     `   Beispiel (${e.lang}, Ordner ${e.cwd}):\n   ${e.example.replace(/\n/g, '\n   ')}`).join('\n')
+  const gaps = entries.length
+    ? `Der Löschschutz delete-guard konnte diese Löschziele nicht selbst bestimmen und musste nachfragen (häufigste zuerst):\n\n${list}`
+    : 'Im Lernprotokoll stehen keine offenen Lücken.'
+  const recent = decisions.slice(-40)
+  const log = decisions.length
+    ? `\n\nEntscheidungsprotokoll (${decisions.length} Fälle; ${decisionCounts(decisions)}), die letzten ${recent.length}:\n\n${decisionLines(recent)}\n\n` +
+      'Daraus ableiten: Was der Nutzer immer wieder erlaubt, ist ein Kandidat für den Parser (nur wenn es sich sicher aus dem Befehlstext berechnen lässt). ' +
+      'Was er ablehnt, obwohl die KI es als gelöst oder „löscht nichts“ eingestuft hätte, ist ein Hinweis, den KI-Prompt strenger zu machen. Nichts lockern, nur weil oft erlaubt wurde.'
+    : ''
   return `delete-guard: Lernauftrag
 
-Der Löschschutz delete-guard konnte diese Löschziele nicht selbst bestimmen und musste nachfragen (häufigste zuerst):
-
-${list}
+${gaps}${log}
 
 Aufgabe:
 1. Die Arbeitskopie des Mods suchen: ein Git-Repository mit origin systemNEO/claude-code-mods (z. B. ~/claude-mods; prüfen mit \`git -C <ordner> remote -v\`). NICHT im installierten Plugin unter ${pluginRoot} ändern, das überschreibt das nächste Update. Gibt es keine Arbeitskopie, den Nutzer fragen.
@@ -473,11 +520,107 @@ Aufgabe:
 Nach dem Update streicht der Mod beim nächsten Sitzungsstart selbst, was er nun auflöst.`
 }
 
+// ---------------------------------------------------------------- Erlaubte Befehle
+
+// „Immer erlauben (genau dieser Befehl)“: für Befehle mit nicht bestimmbaren
+// Zielen, wo sich kein Ordner freigeben lässt. Gemerkt wird der Befehl wörtlich,
+// mit Shell, Arbeitsordner und dem Fingerabdruck jedes Skripts, das er startet.
+// Weicht eins davon ab, wird wieder gefragt.
+
+export type TrustedCommand = { lang: Lang; cwd: string; command: string; scripts: string[] }
+type TrustedEntry = TrustedCommand & { added: number }
+
+const TRUST_KEY = 'commands'
+const TRUST_MAX = 100
+const TRUST_COMMAND = 'delete-guard-befehle'
+
+const sameCommand = (a: TrustedCommand, b: TrustedCommand) =>
+  a.lang === b.lang && a.cwd === b.cwd && a.command === b.command &&
+  a.scripts.length === b.scripts.length && a.scripts.every((s, i) => s === b.scripts[i])
+
+async function readTrusted($: EngineInterface): Promise<TrustedEntry[]> {
+  const v = await $.store.get(TRUST_KEY).catch(() => undefined)
+  return Array.isArray(v) ? (v as TrustedEntry[]) : []
+}
+
+async function trust($: EngineInterface, c: TrustedCommand): Promise<void> {
+  const list = (await readTrusted($)).filter(x => !sameCommand(x, c))
+  list.push({ ...c, added: await $.clock.now() })
+  await $.store.set(TRUST_KEY, list.slice(-TRUST_MAX))
+}
+
 const shorten = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+// ---------------------------------------------------------------- Entscheidungsprotokoll
+
+// Jede Entscheidung des Mods, die nicht einfach „innerhalb, frei“ war: was der
+// Nutzer im Dialog gewählt hat, und was ohne Rückfrage durchging (KI-geprüft,
+// gemerkter Befehl) oder abgelehnt wurde (Modus liste). Bleibt lokal im Store;
+// /delete-guard-protokoll zeigt es, /delete-guard-lernen wertet es mit aus.
+
+type Answer = 'erlaubt' | 'immer (Ordner)' | 'immer (Befehl)' | 'abgelehnt' | 'auto: KI-geprüft' | 'auto: Befehl gemerkt' | 'abgelehnt: liste'
+type Decision = {
+  at: number
+  tool: string
+  cwd: string
+  command: string
+  /** Ziele außerhalb und nicht bestimmbare Stellen, wie im Dialog. */
+  reasons: string[]
+  /** Ergebnis der KI-Prüfung, falls sie lief. */
+  ai?: 'gelöst' | 'löscht nichts' | 'offen'
+  answer: Answer
+  /** Freitext oder Ablehnungsgrund. */
+  note?: string
+  agent?: boolean
+}
+
+const DECISIONS_KEY = 'decisions'
+const DECISIONS_MAX = 300
+const LOG_COMMAND = 'delete-guard-protokoll'
+
+async function readDecisions($: EngineInterface): Promise<Decision[]> {
+  const v = await $.store.get(DECISIONS_KEY).catch(() => undefined)
+  return Array.isArray(v) ? (v as Decision[]) : []
+}
+
+async function record($: EngineInterface, e: Call, f: Findings, what: string, answer: Answer, note?: string): Promise<void> {
+  const ai = f.ai
+    ? f.ai.verified ? (f.ai.nothing.some(Boolean) && !f.ai.targets.flat().length ? 'löscht nichts' : 'gelöst') : 'offen'
+    : undefined
+  const d: Decision = {
+    at: await $.clock.now(), tool: e.tool, cwd: f.cwd, command: shorten(f.exact?.command ?? what, 1000),
+    reasons: f.problems.slice(0, 10).map(p => shorten(p, 200)), answer,
+    ...(ai ? { ai } : {}), ...(note ? { note: shorten(note, 300) } : {}), ...(e.agentId ? { agent: true } : {}),
+  }
+  const list = await readDecisions($)
+  list.push(d)
+  await $.store.set(DECISIONS_KEY, list.slice(-DECISIONS_MAX))
+}
+
+function decisionLines(list: readonly Decision[]): string {
+  const when = (ms: number) => new Date(ms).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })
+  return list.map(d =>
+    `${when(d.at)} ${d.answer}${d.ai ? `, KI: ${d.ai}` : ''}${d.agent ? ', Subagent' : ''} (${d.tool}, ${d.cwd})\n` +
+    `   ${shorten(d.command, 200).replace(/\n/g, '\n   ')}\n` +
+    `   wegen: ${d.reasons.join('; ') || '–'}${d.note ? `\n   Notiz: ${d.note}` : ''}`).join('\n')
+}
+
+function decisionCounts(list: readonly Decision[]): string {
+  const n = new Map<string, number>()
+  for (const d of list) n.set(d.answer, (n.get(d.answer) ?? 0) + 1)
+  return [...n].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}: ${v}`).join(', ')
+}
+
+function trustedList(list: readonly TrustedEntry[]): string {
+  const day = (ms: number) => new Date(ms).toLocaleDateString('de-DE')
+  return list.map((x, i) =>
+    `${i + 1}. ${day(x.added)}, Ordner ${x.cwd}${x.scripts.length ? `, ${x.scripts.length} Skript(e)` : ''}\n   ${shorten(x.command, 300).replace(/\n/g, '\n   ')}`).join('\n')
+}
 
 /** Den Nutzer fragen; true nur bei ausdrücklicher Zustimmung. */
 const ALLOW = 'Erlauben'
 const ALWAYS = 'Immer erlauben'
+const ALWAYS_EXACT = 'Immer erlauben (genau dieser Befehl)'
 const DENY = 'Ablehnen'
 
 /**
@@ -496,6 +639,7 @@ async function describe($: EngineInterface, f: Findings): Promise<string> {
   for (const [i, g] of f.gaps.entries()) {
     if (shown++ >= 8) break
     lines.push(`• ${shorten(g.text, 160)}`)
+    if (f.ai?.nothing[i]) lines.push('  ↳ laut KI: löscht nichts')
     for (const t of (f.ai?.targets[i] ?? []).slice(0, 3))
       lines.push(`  ↳ laut KI ${shorten(t.path, 100)}${t.mode === 'children' ? ' (Inhalt)' : ''}: ${shorten(await preview($, t, deadline), 160)}`)
   }
@@ -506,18 +650,24 @@ async function describe($: EngineInterface, f: Findings): Promise<string> {
   return lines.join('\n')
 }
 
-async function consent($: EngineInterface, what: string, f: Findings, agentId?: string): Promise<true | 'always' | string> {
+async function consent($: EngineInterface, what: string, f: Findings, agentId?: string): Promise<true | 'always' | 'exact' | string> {
   const { ctx, remember } = f
   const list = await describe($, f)
   const who = agentId ? 'Ein Subagent will' : 'Claude will'
+  // Ordner freigeben geht nur bei bekannten Zielen; bei Lücken bleibt der Befehl selbst.
+  const exact = !remember && f.gaps.length > 0 && f.exact !== undefined
   const always = remember
     ? `\n\n„${ALWAYS}“ erlaubt es jetzt und lässt dich danach wählen, welcher Ordner dauerhaft frei wird (ab ${remember.map(r => asSetting(r, ctx)).join(', ')} aufwärts).`
-    : ''
-  const question = `${who} außerhalb von ${ctx.root} löschen (oder das Ziel ist nicht eindeutig):\n${list}\n\n${shorten(what, 400)}${always}\n\nErlauben?`
+    : exact
+      ? `\n\n„${ALWAYS_EXACT}“ lässt ihn künftig ohne Rückfrage durch, solange Befehlstext, Arbeitsordner und gestartete Skripte gleich bleiben (Liste: /${TRUST_COMMAND}).`
+      : ''
+  const learned = f.gaps.length && unresolvedOption !== 'liste' ? `\nDie nicht bestimmbaren Stellen stehen im Lernprotokoll (/${LEARN_COMMAND}).` : ''
+  const question = `${who} außerhalb von ${ctx.root} löschen (oder das Ziel ist nicht eindeutig):\n${list}\n\n${shorten(what, 400)}${always}${learned}\n\nErlauben?`
   try {
-    const answer = await $.ui.ask(question, { options: remember ? [ALLOW, ALWAYS, DENY] : [ALLOW, DENY], header: 'Löschen' })
+    const answer = await $.ui.ask(question, { options: remember ? [ALLOW, ALWAYS, DENY] : exact ? [ALLOW, ALWAYS_EXACT, DENY] : [ALLOW, DENY], header: 'Löschen' })
     if (answer === ALLOW) return true
     if (answer === ALWAYS && remember) return 'always'
+    if (answer === ALWAYS_EXACT && exact) return 'exact'
     return answer === DENY ? 'Der Nutzer hat das Löschen außerhalb des Projektordners abgelehnt.' : `Der Nutzer hat nicht zugestimmt und schreibt: ${answer}`
   } catch {
     return 'Löschen außerhalb des Projektordners braucht die Zustimmung des Nutzers, und es konnte niemand gefragt werden.'
@@ -622,7 +772,14 @@ const verdictOf = async ($: EngineInterface, e: Call, f: Findings, what: string)
     }
     if (chosen.length) await remember($, collapse(chosen, f.ctx.win), f.ctx)
   }
-  return ok === true || ok === 'always'
+  if (ok === 'exact' && f.exact) {
+    await trust($, f.exact)
+      .then(() => $.ui.toast(`${$.plugin.name}: dieser Befehl ist künftig erlaubt (/${TRUST_COMMAND})`))
+      .catch(err => $.ui.log(`${$.plugin.name}: Befehl konnte nicht gespeichert werden (${String(err)}); dieses Mal erlaubt.`))
+  }
+  const answer: Answer = ok === true ? 'erlaubt' : ok === 'always' ? 'immer (Ordner)' : ok === 'exact' ? 'immer (Befehl)' : 'abgelehnt'
+  await record($, e, f, what, answer, answer === 'abgelehnt' ? ok as string : undefined).catch(() => {})
+  return ok === true || ok === 'always' || ok === 'exact'
     ? { decision: 'allow', reason: `${$.plugin.name}: vom Nutzer genehmigt` }
     : { decision: 'deny', reason: `${$.plugin.name}: ${ok}` }
 }
@@ -638,18 +795,33 @@ async function judgeShell($: EngineInterface, e: Call, verdict: Verdict): Promis
   const which: Lang = e.tool === 'PowerShell' ? 'ps' : 'bash'
   const f = await findings($, command, which)
   if (!f.problems.length) return verdict
+  const exact = f.exact
+  if (exact && (await readTrusted($)).some(x => sameCommand(x, exact))) {
+    const text = `${$.plugin.name}: Befehl dauerhaft erlaubt (/${TRUST_COMMAND})`
+    $.ui.toast(text)
+    $.ui.log(`${text}\n  Befehl: ${shorten(command, 300)}`)
+    await record($, e, f, command, 'auto: Befehl gemerkt').catch(() => {})
+    return { decision: 'allow', reason: text }
+  }
   if (f.gaps.length) {
     if (unresolvedOption === 'liste') {
       await learn($, command, which, f).catch(() => {})
+      await record($, e, f, command, 'abgelehnt: liste').catch(() => {})
       return { decision: 'deny', reason: `${$.plugin.name}: Löschziel nicht vorab bestimmbar (${f.gaps.map(g => g.text).join('; ')}). ${LIST_HINT}` }
     }
     if (unresolvedOption === 'ki') f.ai = await aiReview($, command, which, f)
     await learn($, command, which, f).catch(() => {})
     if (f.ai?.verified && f.outsideTargets.length === 0) {
       const all = f.ai.targets.flat()
-      const text = `${$.plugin.name}: KI-geprüft, alles im freien Bereich: ${all.slice(0, 3).map(t => asSetting(t.path, f.ctx)).join(', ')}${all.length > 3 ? ` und ${all.length - 3} weitere` : ''}`
+      const none = f.gaps.filter((_, i) => f.ai?.nothing[i]).map(g => g.text)
+      const parts = [
+        ...(all.length ? [`alles im freien Bereich: ${all.slice(0, 3).map(t => asSetting(t.path, f.ctx)).join(', ')}${all.length > 3 ? ` und ${all.length - 3} weitere` : ''}`] : []),
+        ...(none.length ? [`löscht nichts (${shorten(none.join('; '), 120)})`] : []),
+      ]
+      const text = `${$.plugin.name}: KI-geprüft, ${parts.join('; ')}`
       $.ui.toast(text)
       $.ui.log(`${text}\n  Befehl: ${shorten(command, 300)}`)
+      await record($, e, f, command, 'auto: KI-geprüft').catch(() => {})
       return { decision: 'allow', reason: text }
     }
   }
@@ -746,6 +918,16 @@ export const register: Register = (on, options) => {
       description: 'delete-guard: Claude aus den nicht auflösbaren Löschbefehlen lernen lassen (Parser erweitern, mit Tests)',
       argumentHint: '[leeren]',
     })
+    await $.command.register({
+      name: TRUST_COMMAND,
+      description: 'delete-guard: dauerhaft erlaubte Befehle anzeigen oder entfernen',
+      argumentHint: '[entfernen <Nr.> | leeren]',
+    })
+    await $.command.register({
+      name: LOG_COMMAND,
+      description: 'delete-guard: Protokoll der Lösch-Entscheidungen (gefragt, erlaubt, abgelehnt, automatisch)',
+      argumentHint: '[alle | leeren]',
+    })
     // Nicht den Start aufhalten: die Prüfungen laufen kurz danach, Fehler bleiben still.
     $.clock.after(3000, () => {
       if (e.isInteractive) checkForUpdate($).catch(() => {})
@@ -763,12 +945,44 @@ export const register: Register = (on, options) => {
     }
     await pruneLearned($).catch(() => [])
     const entries = Object.values(await readLearned($)).sort((a, b) => b.count - a.count || b.last - a.last)
-    if (!entries.length) return { text: 'Das Lernprotokoll von delete-guard ist leer: Bisher ließ sich jedes Löschziel bestimmen.' }
+    const decisions = await readDecisions($)
+    if (!entries.length && !decisions.length) return { text: 'Das Lernprotokoll von delete-guard ist leer: Bisher ließ sich jedes Löschziel bestimmen.' }
     // Aus dem Befehl selbst darf kein Prompt starten (er wartete auf sich): kurz danach.
-    const task = learnTask(entries, $.plugin.root)
+    const task = learnTask(entries, $.plugin.root, decisions)
     $.clock.after(50, () => { $.prompt.submit({ text: task }).catch(() => {}) })
-    return { text: `Lernauftrag mit ${entries.length} ${entries.length === 1 ? 'Fall' : 'Fällen'} an Claude übergeben.` }
+    const n = (x: number, one: string, many: string) => `${x} ${x === 1 ? one : many}`
+    return { text: `Lernauftrag mit ${n(entries.length, 'Fall', 'Fällen')} und ${n(decisions.length, 'Entscheidung', 'Entscheidungen')} an Claude übergeben.` }
   }).catch(() => ({ text: 'delete-guard: Lernprotokoll konnte nicht gelesen werden.' }))
+
+  on('command.run', { command: TRUST_COMMAND }, async ($, e) => {
+    const [verb, nr] = e.args.trim().split(/\s+/)
+    if (verb === 'leeren') {
+      await $.store.delete(TRUST_KEY)
+      return { text: 'Alle dauerhaft erlaubten Befehle von delete-guard entfernt.' }
+    }
+    const list = await readTrusted($)
+    if (verb === 'entfernen') {
+      const i = Number(nr) - 1
+      const gone = list[i]
+      if (!Number.isInteger(i) || gone === undefined) return { text: `Keinen Befehl Nr. ${nr ?? '?'} gefunden (1 bis ${list.length}).` }
+      await $.store.set(TRUST_KEY, list.filter((_, j) => j !== i))
+      return { text: `Entfernt: ${shorten(gone.command, 200)}` }
+    }
+    if (!list.length) return { text: 'delete-guard: Es sind keine Befehle dauerhaft erlaubt.' }
+    return { text: `Dauerhaft erlaubte Befehle (Entfernen: /${TRUST_COMMAND} entfernen <Nr.>):\n\n${trustedList(list)}` }
+  }).catch(() => ({ text: 'delete-guard: Liste der erlaubten Befehle konnte nicht gelesen werden.' }))
+
+  on('command.run', { command: LOG_COMMAND }, async ($, e) => {
+    const arg = e.args.trim()
+    if (arg === 'leeren') {
+      await $.store.delete(DECISIONS_KEY)
+      return { text: 'Entscheidungsprotokoll von delete-guard geleert.' }
+    }
+    const list = await readDecisions($)
+    if (!list.length) return { text: 'delete-guard: Das Entscheidungsprotokoll ist leer.' }
+    const shown = arg === 'alle' ? list : list.slice(-20)
+    return { text: `delete-guard: ${list.length} Entscheidungen (${decisionCounts(list)}).${shown.length < list.length ? ` Die letzten ${shown.length}, alle mit „alle“:` : ''}\n\n${decisionLines(shown)}` }
+  }).catch(() => ({ text: 'delete-guard: Entscheidungsprotokoll konnte nicht gelesen werden.' }))
 
   on('tool.check', { tool: /^(Bash|PowerShell|Monitor)$/ }, async ($, e, next) => judgeShell($, e, await next(e)))
     .catch(() => ({ decision: 'deny', reason: 'delete-guard: Prüfung fehlgeschlagen, Befehl vorsichtshalber abgelehnt.' }))

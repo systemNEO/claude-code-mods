@@ -174,3 +174,111 @@ test('Vorschau: ganzer Inhalt, Muster, Ordner samt Inhalt, Datei, fehlt', async 
   expect(await preview($, { path: '/tmp/weg', mode: 'deep', via: 'rm' }, far)).toBe('existiert nicht')
   expect(await preview($, { path: '/tmp/v', mode: 'children', via: 'rm', pattern: '*.jpg' }, far)).toBe('nichts davon vorhanden')
 })
+
+// ---------------------------------------------------------------- 0.8.0
+
+/** Einen Befehl des Mods aufrufen. */
+const run = ($: unknown, command: string, args = '') =>
+  ($ as { command: { run: (a: { command: string; args: string }) => Promise<{ text?: string }> } }).command.run({ command, args })
+
+const nothing = (sicher = true, ziele: string[] = []) =>
+  JSON.stringify({ luecken: [{ nr: 1, sicher, loescht_nichts: true, ziele, grund: 'liest nur' }], erklaerung: 'löscht nichts' })
+
+// $f kommt aus $(grep …): der Python-Code ist nicht fertig bestimmbar.
+const PY = `f=$(grep -rl x locales/ | head -1); python3 -c "import json; print(json.load(open('$f')))"`
+
+test('KI: löscht nichts, ohne Rückfrage und mit Hinweis', async ($, on) => {
+  const calls = engine(on, nothing())
+  const r = await check($, PY)
+  expect(r.decision).toBe('allow')
+  expect(r.reason).toContain('löscht nichts')
+  expect(calls.model).toBe(1)
+})
+
+test('KI: löscht nichts, aber unsicher: Rückfrage', async ($, on) => {
+  engine(on, nothing(false))
+  expect((await check($, PY)).decision).toBe('ask')
+})
+
+test('KI: löscht nichts, nennt aber Ziele außerhalb: die zählen, Rückfrage', async ($, on) => {
+  engine(on, nothing(true, ['/etc/x']))
+  expect((await check($, PY)).decision).toBe('ask')
+})
+
+const trusted = (command: string, more: Record<string, unknown> = {}) =>
+  ({ commands: [{ lang: 'bash', cwd: '/home/u/proj', command, scripts: [], added: 0, ...more }] })
+
+test('Befehl dauerhaft erlaubt: genau dieser Text im selben Ordner, ohne KI', async ($, on) => {
+  const calls = engine(on, null, trusted(PY))
+  const r = await check($, PY)
+  expect(r.decision).toBe('allow')
+  expect(r.reason).toContain('dauerhaft erlaubt')
+  expect(calls.model).toBe(0)
+  // Ein Zeichen anders: wieder fragen.
+  expect((await check($, `${PY} `)).decision).toBe('ask')
+})
+
+test('Befehl dauerhaft erlaubt: anderer Ordner oder andere Shell fragt', async ($, on) => {
+  engine(on, null, { commands: [
+    { lang: 'bash', cwd: '/home/u/anders', command: PY, scripts: [], added: 0 },
+    { lang: 'ps', cwd: '/home/u/proj', command: PY, scripts: [], added: 0 },
+  ] })
+  expect((await check($, PY)).decision).toBe('ask')
+})
+
+test('Befehl dauerhaft erlaubt: gestartetes Skript muss gleich sein', async ($, on) => {
+  const SH = 'bash x.sh; rm -rf "/tmp/${!Y}"'
+  engine(on, null, { commands: [{ lang: 'bash', cwd: '/home/u/proj', command: SH, scripts: ['/home/u/proj/x.sh 1234'], added: 0 }] })
+  // Das Skript fehlt hier (fs.stat wirft): Fingerabdruck „fehlt“ ≠ gespeichert.
+  expect((await check($, SH)).decision).toBe('ask')
+})
+
+test('Befehl dauerhaft erlaubt: Skript-Fingerabdruck stimmt', async ($, on) => {
+  const SH = 'bash x.sh; rm -rf "/tmp/${!Y}"'
+  engine(on, null, { commands: [{ lang: 'bash', cwd: '/home/u/proj', command: SH, scripts: ['/home/u/proj/x.sh fehlt'], added: 0 }] })
+  expect((await check($, SH)).decision).toBe('allow')
+})
+
+test('/delete-guard-befehle: anzeigen, entfernen, leeren', async ($, on) => {
+  engine(on, null, { commands: [
+    { lang: 'bash', cwd: '/home/u/proj', command: 'eins', scripts: [], added: 0 },
+    { lang: 'bash', cwd: '/home/u/proj', command: 'zwei', scripts: [], added: 0 },
+  ] })
+  const shown = (await run($, 'delete-guard-befehle')).text ?? ''
+  expect(shown).toContain('1. ')
+  expect(shown).toContain('zwei')
+  expect((await run($, 'delete-guard-befehle', 'entfernen 1')).text).toContain('eins')
+  expect((await run($, 'delete-guard-befehle')).text).not.toContain('eins')
+  expect((await run($, 'delete-guard-befehle', 'entfernen 7')).text).toContain('Keinen Befehl')
+  await run($, 'delete-guard-befehle', 'leeren')
+  expect((await run($, 'delete-guard-befehle')).text).toContain('keine Befehle')
+})
+
+test('Entscheidungsprotokoll: automatische Freigaben und liste werden mitgeschrieben', async ($, on) => {
+  engine(on, nothing(), trusted('rm -rf "$(cat liste)"'))
+  await check($, PY)
+  await check($, 'rm -rf "$(cat liste)"')
+  await check($, 'rm -rf build')
+  const t = (await run($, 'delete-guard-protokoll')).text ?? ''
+  expect(t).toContain('2 Entscheidungen')
+  expect(t).toContain('auto: KI-geprüft, KI: löscht nichts')
+  expect(t).toContain('auto: Befehl gemerkt')
+  expect(t).toContain('python3')
+  expect((await run($, 'delete-guard-protokoll', 'leeren')).text).toContain('geleert')
+  expect((await run($, 'delete-guard-protokoll')).text).toContain('leer')
+})
+
+test('Entscheidungsprotokoll: Modus liste', { options: { unresolved: 'liste' } }, async ($, on) => {
+  engine(on)
+  await check($, CMD)
+  expect((await run($, 'delete-guard-protokoll')).text).toContain('abgelehnt: liste')
+})
+
+test('Lernauftrag enthält die Entscheidungen', async ($, on) => {
+  const calls = engine(on, nothing())
+  await check($, PY)
+  expect((await learnCmd($)).text).toContain('1 Entscheidung')
+  await calls.clock.advance(100)
+  expect(calls.prompts[0]).toContain('Entscheidungsprotokoll (1 Fälle')
+  expect(calls.prompts[0]).toContain('auto: KI-geprüft')
+})

@@ -16,6 +16,7 @@ own dialog:
 | --- | --- |
 | *Erlauben* (allow) | The call runs this once. |
 | *Immer erlauben* (always allow) | The call runs, and you pick a folder to free for good: the target's folder, or walk up with *Höher …* (and back with *Tiefer …*) to the one you want. See [Allow a folder from the dialog](#allow-a-folder-from-the-dialog). |
+| *Immer erlauben (genau dieser Befehl)* (always allow this exact command) | Offered instead when a target could not be determined. The call runs, and the same command runs without a question from then on. See [Allow an exact command](#allow-an-exact-command). |
 | *Ablehnen* (deny) | The call is refused; Claude sees the refusal and the reason. |
 
 (The dialog text is currently in German.)
@@ -78,10 +79,29 @@ which folder to free for good:
 | *Other*: a path you type, e.g. `/tmp` | That folder is added, if it is absolute (or `~/…`) and not a root. |
 
 The root of a drive or file system (`/`, `C:\`, `\\server\share`) and registry
-paths are never offered and never saved, and *Immer erlauben* is not offered at
-all when a target could not be determined. When there is only one folder to
-choose from, it is saved without the second question. Remove a folder again with
-`/plugin configure delete-guard@claude-code-mods` or in `settings.json`.
+paths are never offered and never saved, and a folder is not offered when a
+target could not be determined (see the next section for that case). When there
+is only one folder to choose from, it is saved without the second question.
+Remove a folder again with `/plugin configure delete-guard@claude-code-mods` or
+in `settings.json`.
+
+### Allow an exact command
+
+When a target could not be determined, there is no folder to free. The dialog
+then offers **Immer erlauben (genau dieser Befehl)**: the call runs, and the
+mod remembers the command. It runs without a question again only while all of
+this stays the same:
+
+- the command text, character for character;
+- the shell (Bash or PowerShell) and the working folder;
+- every script the command starts and the mod reads (see [Rules](#rules)):
+  its path and a checksum of its contents; a script that was missing must
+  still be missing.
+
+`/delete-guard-befehle` lists the remembered commands,
+`/delete-guard-befehle entfernen <Nr.>` removes one, `/delete-guard-befehle leeren`
+removes all. The list stays on this machine (the mod's own store), up to 100
+commands.
 
 ### How to set the options
 
@@ -223,6 +243,7 @@ started in, or the folder set in [Configuration](#configuration).
 | Subagents | Same rules. The dialog says a subagent wants to delete. |
 | *Erlauben* | The call runs, without a second permission prompt. |
 | *Immer erlauben* | The call runs, and you pick a folder (the target's folder or one above it) that is free from then on; see [Allow a folder from the dialog](#allow-a-folder-from-the-dialog). |
+| *Immer erlauben (genau dieser Befehl)* | The call runs, and the same command (same text, folder, shell and scripts) runs without a question from then on; see [Allow an exact command](#allow-an-exact-command). |
 | A target lies in a folder from `allowedFolders` | Like inside the start folder: no dialog. |
 | *Ablehnen* | The call is refused; Claude is told the user denied it. |
 | Free text typed into the dialog ("Other") | Counts as a denial; the text is passed on to Claude as the reason. |
@@ -276,7 +297,20 @@ check passes:
 - no other target of the command lies outside.
 
 It then shows a toast (*KI-geprüft, alles im freien Bereich: …*) and writes a
-line to the transcript. In every other case the dialog opens, now with what
+line to the transcript.
+
+One answer cannot be checked by the mod: **"deletes nothing"**. For
+`f=$(grep -l …); python3 -c "…open('$f')…"` the code cannot be completed from
+the text, but the model can see that it only reads a file. It may say so
+(`"loescht_nichts": true`, certain, no paths) only if the code is fully in the
+command, contains no call that deletes, empties or overwrites, starts no
+program or shell command, and uses unknown values only as data, never as code
+(`eval`, `exec`, `os.system`, `subprocess`, `sh -c`, decoded or downloaded
+code). The mod accepts that and says so in the toast (*KI-geprüft, löscht
+nichts (…)*) and the transcript line. If the model names paths anyway, they are
+checked as above. The residual risk here is the model's judgement alone, for
+example an unknown value that a shell splices into the code and that turns out
+to be code itself. In every other case the dialog opens, now with what
 the model found for each open target (with the preview) and why it was not
 enough. The command is passed to the model as data; text in it that addresses
 the model is to be ignored, and the checks above do not rely on the model's
@@ -301,6 +335,24 @@ out from the command text alone (with tests for inside, outside and a way out
 through the new construct), leave causes that depend on run time as they are,
 run the tests, bump the version, and ask before committing.
 `/delete-guard-lernen leeren` clears the log.
+
+### Decision log
+
+Every decision other than "all inside, nothing to do" is logged as well: the
+answer in the dialog (*erlaubt*, *immer (Ordner)*, *immer (Befehl)*,
+*abgelehnt* with your free text), and what went through or was refused without
+a question (*auto: KI-geprüft*, *auto: Befehl gemerkt*, *abgelehnt: liste*),
+each with the command, the reasons, the result of the AI check, the folder and
+whether a subagent asked. The last 300 decisions are kept on this machine.
+
+`/delete-guard-protokoll` shows the last 20 with a count per answer,
+`/delete-guard-protokoll alle` all of them, `/delete-guard-protokoll leeren`
+clears the log. `/delete-guard-lernen` hands the decisions to Claude together
+with the learning log: what you keep allowing is a candidate for the parser
+(only if it can be worked out from the command text), what you deny although
+the AI check would have passed it is a reason to make the check stricter.
+Commands may contain secrets (tokens on a command line); they stay in the
+local store like the learning log.
 
 The mod never changes its own code. A deletion guard that rewrites its rules
 unattended could be talked out of its job; the change goes through Claude, the
@@ -469,10 +521,12 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
   pure functions without `$`. Each target they cannot work out is reported
   with its cause and the known start of the path.
 - The AI check uses `$.model.complete`; the dialog's preview uses `$.fs.list`
-  and `$.fs.stat`; the learning log lives in `$.store`; `/delete-guard-lernen`
-  is a command registered at `session.start`, which hands its task over with
-  `$.prompt.submit` just after the command returns.
-- About 270 cases in `tests/`. Nothing in the tests is executed; they only
+  and `$.fs.stat`; the learning log, the decision log and the remembered
+  commands live in `$.store`; `/delete-guard-lernen`, `/delete-guard-protokoll`
+  and `/delete-guard-befehle` are commands registered at `session.start`;
+  `/delete-guard-lernen` hands its task over with `$.prompt.submit` just after
+  the command returns.
+- About 280 cases in `tests/`. Nothing in the tests is executed; they only
   analyse command text, and the model is a fixed answer.
 
 ## Development
