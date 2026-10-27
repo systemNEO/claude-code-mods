@@ -1058,10 +1058,15 @@ function interpCmd(name: string, flags: string[], cmd: Cmd, args: Word[], st: St
   for (let i = 0; i < args.length; i++) {
     const s = one(args[i], st, ctx)
     if (s !== null && flags.some(f => s === f || (f.length === 2 && /^-[A-Za-z]+$/.test(s) && s.endsWith(f[1] ?? '')))) {
-      const code = one(args[i + 1], st, ctx)
-      if (code === null) return void out.unknowns.push(`${name}: Code nicht auflösbar`)
+      // In einer for-Schleife hat der Code mehrere bekannte Fassungen
+      // (`for s in a b; do python3 -c "…$s…"`): jede wird geprüft. Ein
+      // ungeschütztes Glob im Code setzte Bash durch Dateinamen: unbekannt.
+      const cw = args[i + 1]
+      const codes = cw ? expand(cw, st, ctx) : null
+      if (codes === null || codes.some(c => c.glob)) return void out.unknowns.push(`${name}: Code nicht auflösbar`)
       const rest = args.slice(i + 2).flatMap(w => expand(w, st, ctx) ?? [])
-      return inlineCode(code, rest, st, ctx, out, name)
+      for (const c of codes) inlineCode(c.s, rest, st, ctx, out, name)
+      return
     }
     if (s === null || !s.startsWith('-')) {
       if (s === null || s !== '-') return

@@ -275,6 +275,28 @@ describe('Praxisbefehle', () => {
   })
 })
 
+// Interpreter-Code in einer for-Schleife: jede Fassung des Codes wird geprüft.
+describe('Interpreter-Code mit Schleifenvariable', () => {
+  free(`for s in platform guest-booking; do python3 -c "import json;print(json.load(open('services/$s/composer.json'))['autoload'])"; done`)
+  free(`for f in a b; do python3 -c "import os; os.remove('$f.tmp')"; done`)
+  free(`P=/home/u/proj/.venv/bin/python; for v in esel otter; do $P -I -c "import cv2; f='/home/u/proj/final/$v.png'; cv2.imwrite(f, cv2.imread(f))"; done`)
+  free(`for f in billing booking; do php -r '$d=require "lang/de/'$f'.php";echo count($d);'; done`)
+  free(`for f in communication buchungen; do node -e 'const d=require("./locales/de/'$f'.json");console.log(Object.keys(d))'; done`)
+  // Der Wert kommt aus einer Programmausgabe: bleibt unbekannt.
+  asks(`f=$(grep -rl other_providers locales/de); python3 -c "import json;d=json.load(open('$f'))"`)
+  asks('python3 -c *')
+  // Eine der Fassungen führt nach außen.
+  asks(`for d in build /var/www; do python3 -c "import shutil; shutil.rmtree('$d')"; done`)
+  test('jede Fassung wird geprüft', () => {
+    const r = check(`for d in /tmp/a /tmp/b; do node -e "require('fs').rmSync('$d',{recursive:true})"; done`)
+    expect(r.outside).toEqual(['/tmp/a', '/tmp/b'])
+  })
+  test('Der Fall aus der Praxis: php -r und node -e über for-Listen', () => {
+    const cmd = `cd /home/u/proj/services/campsite-mgmt && for f in billing booking validation; do php -r '$d=require "lang/de/'$f'.php";$e=require "lang/en/'$f'.php";function k($a,$p=""){$r=[];foreach($a as $x=>$v){if(is_array($v))$r=array_merge($r,k($v,"$p$x."));else $r[]="$p$x";}return $r;}echo "'$f' de-only: ".implode(",",array_diff(k($d),k($e)))." | en-only: ".implode(",",array_diff(k($e),k($d))),"\\n";' 2>&1; done; for f in communication buchungen; do node -e 'const d=require("./resources/js/locales/de/'$f'.json"),e=require("./resources/js/locales/en/'$f'.json");const k=(o,p="")=>Object.entries(o).flatMap(([x,v])=>typeof v==="object"?k(v,p+x+"."):[p+x]);const a=k(d),b=k(e);console.log("'$f'",a.filter(x=>!b.includes(x)),b.filter(x=>!a.includes(x)))' 2>&1; done`
+    expect(check(cmd).unknowns).toEqual([])
+  })
+})
+
 describe('Ursachen und bekannter Anfang (für KI und Lernprotokoll)', () => {
   const gaps = (src: string) => {
     const out = newOut()

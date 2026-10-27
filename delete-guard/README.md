@@ -424,7 +424,8 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - Inline code (`python -c`, `node -e` …) is checked by a heuristic: it looks
   for delete calls and takes every string in the code as a possible path.
   Paths built at run time count as unknown (dialog); deliberately obfuscated
-  code can slip through.
+  code can slip through. Code that contains a `for` variable
+  (`for s in a b; do python3 -c "…$s…"; done`) is checked once per value.
 - Aliases and shell functions from your shell profile are not known. A
   function defined in the same command is checked where its body appears.
 - Unrecognised wrappers hide the command behind them, for example
