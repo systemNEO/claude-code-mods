@@ -1,6 +1,6 @@
 {
   "name": "wsl-file-links",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Under WSL, absolute paths in Claude's replies become clickable file:// links that Windows opens (files and folders).",
   "author": {
     "name": "systemNEO"

@@ -4,6 +4,8 @@ const LINUX_PATH = /(?<![\w:/.\]])(\/(?:home|tmp|mnt|usr|etc|opt|var|srv|root)\/
 const UNC_PATH = /(\\\\wsl(?:\.localhost|\$)\\[^\s`'"()<>[\]]+)/g
 /** An inline code span holding nothing but such a path loses its backticks, so the link can be drawn. */
 const CODE_SPAN_WITH_PATH = /`((?:\/(?:home|tmp|mnt|usr|etc|opt|var|srv|root)\/|\\\\wsl(?:\.localhost|\$)\\)[^`\s]+)`/g
+/** A Markdown link whose target is an absolute Linux path: the text stays, the target becomes file://. */
+const LINK_TO_LINUX_PATH = /^\[([^\]]*)\]\((\/(?:home|tmp|mnt|usr|etc|opt|var|srv|root)\/[^)\s]+)\)$/
 const TRAILING_PUNCTUATION = /[.,;:!?]+$/
 const WINDOWS_DRIVE_MOUNT = /^\/mnt\/([a-z])(\/.*)?$/
 const FENCE = /^\s*(```|~~~)/
@@ -39,7 +41,7 @@ function linkLine(line: string, distro: string): string {
   return parts
     .map((part, index) => {
       if (index % 2 === 1) {
-        return part
+        return part.replace(LINK_TO_LINUX_PATH, (_, text, path) => `[${text}](${fileUrlOf(path, distro)})`)
       }
       return part
         .replace(LINUX_PATH, match => {

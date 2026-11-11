@@ -19,11 +19,12 @@ uses for it (an image viewer, an editor, Explorer for a folder).
 | a folder, `/home/you/project/` | the folder in Explorer |
 | `/mnt/c/Users/you/Videos/` | `file:///C:/Users/you/Videos/` |
 | `\\wsl.localhost\<distro>\…` (a UNC path) | `file:////wsl.localhost/<distro>/…` |
+| a link to a path, `[Screenshot](/tmp/…/shot.png)` | the same `file://` address; the text `Screenshot` stays |
 
 The text you see stays the same; only the path becomes a link. Left alone are:
 
 - code blocks (fenced with ``` or ~~~) and inline code with more than a path in it,
-- links Claude already wrote,
+- links Claude already wrote to anything other than an absolute path (`https://…`, `file://…`),
 - relative paths such as `src/main.ts`.
 
 A path in backticks on its own (`` `/tmp/x.png` ``) loses the backticks, so it

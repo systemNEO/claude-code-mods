@@ -18,6 +18,14 @@ test('existing links and relative paths stay untouched', () => {
   expect(withFileLinks('client/src/main.ts', 'Ubuntu')).toBe('client/src/main.ts')
 })
 
+test('a Markdown link to a Linux path keeps its text and gets a file:// target', () => {
+  expect(withFileLinks('[Zwei Wachen](/tmp/a/zwei.png) und [Mauer](/mnt/c/x.png)', 'Ubuntu')).toBe(
+    '[Zwei Wachen](file://wsl.localhost/Ubuntu/tmp/a/zwei.png) und [Mauer](file:///C:/x.png)',
+  )
+  expect(withFileLinks('[Doku](https://example.com/tmp/x)', 'Ubuntu')).toBe('[Doku](https://example.com/tmp/x)')
+  expect(withFileLinks('`[x](/tmp/x.png)`', 'Ubuntu')).toBe('`[x](/tmp/x.png)`')
+})
+
 test('Windows drives and UNC paths', () => {
   expect(fileUrlOf('/mnt/c/Users/you/Videos', 'Ubuntu')).toBe('file:///C:/Users/you/Videos')
   expect(withFileLinks('\\\\wsl.localhost\\Ubuntu\\tmp\\x.png', 'Ubuntu')).toBe(
