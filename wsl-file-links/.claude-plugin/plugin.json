@@ -1,0 +1,11 @@
+{
+  "name": "wsl-file-links",
+  "version": "0.1.0",
+  "description": "Under WSL, absolute paths in Claude's replies become clickable file:// links that Windows opens (files and folders).",
+  "author": {
+    "name": "systemNEO"
+  },
+  "homepage": "https://github.com/systemNEO/claude-code-mods/tree/main/wsl-file-links",
+  "repository": "https://github.com/systemNEO/claude-code-mods",
+  "license": "MIT"
+}

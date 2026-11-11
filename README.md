@@ -5,6 +5,7 @@ Mods for [Claude Code](https://claude.com/claude-code) by systemNEO.
 | Mod | What it does |
 | --- | --- |
 | [delete-guard](delete-guard/) | Deleting outside the project folder requires your approval, in every permission mode and for subagents too; Bash, PowerShell, cmd, Git Bash, WSL, MCP. Allow a folder once or for good from the dialog, or list allowed folders such as `/tmp` yourself. |
+| [wsl-file-links](wsl-file-links/) | For Claude Code in WSL: absolute paths in Claude's replies become clickable `file://` links that Windows opens, files and folders alike, also `/mnt/c/…` and `\\wsl.localhost\…` paths. |
 
 ## Installation
 
@@ -13,9 +14,10 @@ Add the marketplace and install a mod (Linux, macOS, Windows):
 ```bash
 claude plugin marketplace add systemNEO/claude-code-mods
 claude plugin install delete-guard@claude-code-mods
+claude plugin install wsl-file-links@claude-code-mods
 ```
 
-The mod is installed for your user, i.e. for all projects and sessions on the
+Install only the mods you want. A mod is installed for your user, i.e. for all projects and sessions on the
 machine. Sessions that are already running pick it up with `/reload-plugins`.
 Each environment with its own Claude Code configuration (for example WSL and
 native Windows on the same PC) needs its own installation; see

@@ -9,6 +9,11 @@
       "name": "delete-guard",
       "source": "./delete-guard",
       "description": "Deleting outside the project folder requires the user's approval (Bash, PowerShell, cmd, subagents, MCP)."
+    },
+    {
+      "name": "wsl-file-links",
+      "source": "./wsl-file-links",
+      "description": "Under WSL, absolute paths in Claude's replies become clickable file:// links that Windows opens (files and folders)."
     }
   ]
 }
