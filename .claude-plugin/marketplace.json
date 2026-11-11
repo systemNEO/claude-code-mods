@@ -14,6 +14,11 @@
       "name": "wsl-file-links",
       "source": "./wsl-file-links",
       "description": "Under WSL, absolute paths in Claude's replies become clickable file:// links that Windows opens (files and folders)."
+    },
+    {
+      "name": "overwrite-guard",
+      "source": "./overwrite-guard",
+      "description": "Stops Claude from rewriting whole existing files (Write on an existing file, shell overwrites with >, tee, cp, mv, python/node writes); it uses Edit instead."
     }
   ]
 }

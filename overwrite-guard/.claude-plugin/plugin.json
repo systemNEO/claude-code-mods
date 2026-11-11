@@ -1,0 +1,31 @@
+{
+  "name": "overwrite-guard",
+  "version": "0.1.0",
+  "description": "Stops Claude from rewriting whole existing files: Write on an existing file and shell commands that replace one (>, tee, cp, mv, python/node writes) are refused with a request to use Edit.",
+  "author": {
+    "name": "systemNEO"
+  },
+  "homepage": "https://github.com/systemNEO/claude-code-mods/tree/main/overwrite-guard",
+  "repository": "https://github.com/systemNEO/claude-code-mods",
+  "license": "MIT",
+  "userConfig": {
+    "protectedExtensions": {
+      "type": "string",
+      "title": "Protected extensions",
+      "description": "File extensions whose files a shell command may not replace as a whole, separated by commas, without dots. * protects every file. Write is refused on every existing file, whatever its extension.",
+      "default": "md, ts, tsx, js, jsx, mjs, cjs, php, json, yaml, yml, sh, bash, html, css, scss, py, sql, env, conf, caddy, toml"
+    },
+    "freeFolders": {
+      "type": "string",
+      "title": "Free folders",
+      "description": "Folders in which files may be rewritten freely, separated by commas. An absolute path or ~/… frees everything below it; a bare name (scratchpad, node_modules) frees every folder of that name; a relative path is read from the project folder.",
+      "default": "/tmp, ~/.claude/plans, scratchpad, node_modules, vendor"
+    },
+    "allowedFiles": {
+      "type": "string",
+      "title": "Allowed files",
+      "description": "Files that may be rewritten as a whole, as patterns separated by commas, e.g. package-lock.json, docs/generated/**, **/*.snap. * matches within one folder name, ** across folders; a pattern without / matches the file name anywhere; others are read from the project folder or are absolute.",
+      "default": ""
+    }
+  }
+}

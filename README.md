@@ -6,6 +6,7 @@ Mods for [Claude Code](https://claude.com/claude-code) by systemNEO.
 | --- | --- |
 | [delete-guard](delete-guard/) | Deleting outside the project folder requires your approval, in every permission mode and for subagents too; Bash, PowerShell, cmd, Git Bash, WSL, MCP. Allow a folder once or for good from the dialog, or list allowed folders such as `/tmp` yourself. |
 | [wsl-file-links](wsl-file-links/) | For Claude Code in WSL: absolute paths in Claude's replies become clickable `file://` links that Windows opens, files and folders alike, also `/mnt/c/…` and `\\wsl.localhost\…` paths. |
+| [overwrite-guard](overwrite-guard/) | Claude may not rewrite a whole existing file: Write on an existing file and shell commands that replace one (`>`, `tee`, `cp`, `mv`, Python/Node writes, PowerShell) are refused with a request to use Edit, where you see the diff. Free folders and allowed files are configurable. |
 
 ## Installation
 
@@ -15,6 +16,7 @@ Add the marketplace and install a mod (Linux, macOS, Windows):
 claude plugin marketplace add systemNEO/claude-code-mods
 claude plugin install delete-guard@claude-code-mods
 claude plugin install wsl-file-links@claude-code-mods
+claude plugin install overwrite-guard@claude-code-mods
 ```
 
 Install only the mods you want. A mod is installed for your user, i.e. for all projects and sessions on the
