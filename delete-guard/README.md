@@ -49,7 +49,7 @@ Sessions that are already running pick up the mod with `/reload-plugins`.
 | --- | --- | --- |
 | `boundary` | empty | The folder inside which deleting needs no approval. Empty: the folder the session was started in. An absolute path or `~` for your home folder, e.g. `~`, `~/projects`, `/srv/work`; on Windows `~\projects` or `C:\Users\you\projects`. |
 | `allowedFolders` | empty | More folders inside which deleting needs no approval, **in addition** to the boundary, e.g. `/tmp`, `~/Downloads`; on Windows `C:\Temp`, `~\Downloads`. Separate several with commas. *Immer erlauben* in the dialog adds folders here (see below). |
-| `unresolved` | `ki` | What happens when a target cannot be worked out from the command text: `ki` (a model works it out, the mod checks the answer), `fragen` (always the dialog), `liste` (refuse and ask Claude for an explicit list of paths). See [Targets it cannot work out](#targets-it-cannot-work-out). |
+| `unresolved` | `ki` | What happens when a target cannot be worked out from the command text: `ki` (a model works it out, the mod checks the answer), `fragen` (always the dialog), `liste` (refuse and ask Claude for an explicit list of paths), `umschreiben` (like `ki`; what stays open goes back to Claude with instructions to rewrite it so the target can be read from the text). See [Targets it cannot work out](#targets-it-cannot-work-out). |
 | `aiModel` | `sonnet` | The model for `unresolved: ki`, as an alias (`sonnet`, `haiku`, `opus`) or a full id. |
 
 The boundary **replaces** the start folder; it does not add to it. With
@@ -249,7 +249,7 @@ started in, or the folder set in [Configuration](#configuration).
 | Free text typed into the dialog ("Other") | Counts as a denial; the text is passed on to Claude as the reason. |
 | Nobody can be asked (`claude -p`, the SDK, dialog dismissed) | Denied. |
 | The check itself fails | Denied (fail closed). |
-| Scripts started by the command (`bash x.sh`, `./x.sh`, `source x.sh`, `.\x.ps1`, `x.cmd`) | Read and checked one level deep if they lie in the project or a temp folder. Installed tools elsewhere (e.g. `~/.nvm/nvm.sh`) are not read. |
+| Scripts started by the command (`bash x.sh`, `./x.sh`, `source x.sh`, `.\x.ps1`, `x.cmd`) | Read and checked one level deep if they lie in the project or a temp folder. Installed tools elsewhere (e.g. `~/.nvm/nvm.sh`) are not read. A file read with `source` / `.` is checked in place: the variables it sets (also via `${BASH_SOURCE[0]}`) count in the rest of the command, so `source env.sh && bash $ROOT/x.sh` finds `x.sh`. |
 | MCP tools with `delete`/`remove`/`unlink`/`rmdir`/`trash`/`erase` in their name | Their path arguments are checked like `rm -r`. Such tools without path arguments (e.g. deleting a cloud document) are left alone. |
 
 ## What the dialog shows
@@ -278,7 +278,9 @@ file, `$(ls …)`, `${!ref}`, a pipeline into `xargs rm`. The option
 `unresolved` decides what happens then.
 
 **`ki` (default): a model works it out, the mod checks the answer.** The mod
-sends the command and the list of open targets to the model set in `aiModel`
+sends the command, the scripts it read for it (each in full or not at all; up
+to 12,000 characters per script and 30,000 in total) and the list of open
+targets to the model set in `aiModel`
 (through Claude Code's own client, as a separate request with no history and
 no tools). The model answers in JSON: the concrete paths for each open target
 and whether they follow from the command text alone. The mod then checks that
@@ -323,6 +325,22 @@ passes every check; the answer is cached per command for the session.
 first and then call `rm` / `Remove-Item` with an explicit list of finished
 paths. Known targets outside still get the dialog as usual.
 
+**`umschreiben`:** the AI check runs as with `ki`. If it does not settle
+everything and no known target lies outside, the call is refused without a
+question and Claude gets instructions for a second attempt: write the targets
+as finished paths; work out run-time values in a command of their own, print
+them, then delete with that literal path; do not delete through parameters or
+computed variables inside scripts and functions; pass values to `python -c` /
+`node -e` as arguments instead of splicing shell variables into the code; do
+not start scripts through computed paths; do not work around the guard. After
+two such refusals within ten minutes (per agent) the dialog asks instead, so a
+command that cannot be written statically still reaches you. Each refusal is
+logged (*auto: umschreiben*) and counted in the learning log.
+
+The same answer is available in every other mode: when a target of a shell
+command could not be determined, the dialog offers **Umschreiben lassen**. It
+refuses the call with those instructions (logged as *umschreiben*).
+
 ### Learning from what it could not work out
 
 Every open target is logged with its cause (kind and construct, for example
@@ -340,8 +358,9 @@ run the tests, bump the version, and ask before committing.
 
 Every decision other than "all inside, nothing to do" is logged as well: the
 answer in the dialog (*erlaubt*, *immer (Ordner)*, *immer (Befehl)*,
-*abgelehnt* with your free text), and what went through or was refused without
-a question (*auto: KI-geprüft*, *auto: Befehl gemerkt*, *abgelehnt: liste*),
+*umschreiben*, *abgelehnt* with your free text), and what went through or was
+refused without a question (*auto: KI-geprüft*, *auto: Befehl gemerkt*,
+*abgelehnt: liste*, *auto: umschreiben*),
 each with the command, the reasons, the result of the AI check, the folder and
 whether a subagent asked. The last 300 decisions are kept on this machine.
 
@@ -378,7 +397,13 @@ operators on known values: `${v#pat}`, `${v##pat}`, `${v%pat}`, `${v%%pat}`,
 `${v:off:len}`, `${#v}`, `${v^^}`, `${v,,}`, `${v:+alt}`, `${v:?msg}`.
 Patterns are read as globs; quoted parts match literally. What cannot be
 reproduced exactly (extglob, `&` in a replacement, `${!ref}`, arrays,
-`$((…))`) stays unknown.
+`$((…))`) stays unknown. The default in `${v:-word}` is expanded like any
+word. A word that is only an unquoted variable (`rm $F`) is split at
+whitespace as Bash does, and each part counts. A variable with several values
+(from a `for` list) has the same value everywhere within one word. `set -- …`
+sets `$1`, `$2` … when its words are unambiguous; after `shift`, `getopts` or
+an ambiguous `set --` they are unknown. The command of `trap '…' EXIT` is
+checked like any other.
 
 Every other command runs as normal.
 
@@ -420,7 +445,15 @@ The same holds inside nested calls: `powershell -Command "Remove-Item \*"`,
 - Shell scripts that the command starts (`bash x.sh`, `./x.sh`, `source x.sh`,
   `.\x.ps1`, `x.cmd`) are read one level deep, and only if they lie in the
   project or a temp folder. Scripts those scripts call, and scripts elsewhere
-  (installed tools such as `~/.nvm/nvm.sh`), are not read.
+  (installed tools such as `~/.nvm/nvm.sh`), are not read. Exception: what a
+  `source`d file itself sources or starts is read too (up to four rounds).
+- Shell functions are not followed: a function body is checked where it is
+  defined, with `$1`, `$2` … unknown, so `f() { rm "$1"; }` asks (or goes to the
+  AI check, which sees the script and the call) even if the call passes a
+  harmless path.
+- In Python code, delete calls of other languages (`rmSync`, `fs.rm`,
+  `File.delete` …) count as text, unless the code starts programs or runs text
+  (`subprocess`, `os.system`, `exec`, `eval` …).
 - Inline code (`python -c`, `node -e` …) is checked by a heuristic: it looks
   for delete calls and takes every string in the code as a possible path.
   Paths built at run time count as unknown (dialog); deliberately obfuscated

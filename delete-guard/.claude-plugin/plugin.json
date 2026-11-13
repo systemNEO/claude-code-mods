@@ -1,6 +1,6 @@
 {
   "name": "delete-guard",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Deleting outside the project folder requires the user's approval (Bash, PowerShell, cmd, subagents, MCP).",
   "author": {
     "name": "systemNEO"
@@ -24,8 +24,8 @@
     "unresolved": {
       "type": "string",
       "title": "Unresolvable targets",
-      "description": "When a delete target cannot be worked out from the command (computed paths, loops, $(…)): \"ki\" lets a model work it out and the mod checks the result with its own rules (no question if everything is inside); \"fragen\" always asks; \"liste\" refuses the call and tells Claude to pass an explicit list of paths.",
-      "options": ["ki", "fragen", "liste"],
+      "description": "When a delete target cannot be worked out from the command (computed paths, loops, $(…)): \"ki\" lets a model work it out and the mod checks the result with its own rules (no question if everything is inside); \"fragen\" always asks; \"liste\" refuses the call and tells Claude to pass an explicit list of paths; \"umschreiben\" works like \"ki\", and what stays open goes back to Claude without a question, with instructions to write the command or script so that the target can be read from the text (after two such refusals in ten minutes the dialog asks).",
+      "options": ["ki", "fragen", "liste", "umschreiben"],
       "default": "ki"
     },
     "aiModel": {

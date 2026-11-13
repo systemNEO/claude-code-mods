@@ -15,6 +15,12 @@ export type Ctx = {
   env: (name: string) => string | undefined
   /** Weitere freie Ordner (Option `allowedFolders`), absolut und gefaltet. */
   allowed?: string[]
+  /**
+   * Inhalt von Skripten, die register.ts schon gelesen hat (absoluter Pfad →
+   * Text). Ein `source` auf eine solche Datei wird an Ort und Stelle
+   * mitgelesen: ihre Variablen gelten danach im Befehl.
+   */
+  files?: ReadonlyMap<string, string>
 }
 
 /**
@@ -53,7 +59,12 @@ export type GapKind =
   | 'other'
 
 /** Ein Skript, das der Befehl ausführt und das register.ts nachliest. */
-export type ScriptRef = { path: string; lang: Lang }
+export type ScriptRef = {
+  path: string
+  lang: Lang
+  /** Schon an Ort und Stelle mitgelesen (`source`): nur noch der Fingerabdruck fehlt. */
+  done?: boolean
+}
 
 export type Lang = 'bash' | 'ps' | 'cmd'
 
@@ -82,6 +93,8 @@ export type State = {
   alts?: string[]
   /** Zu Variablen mit unbekanntem Wert (null in `vars`): warum. */
   why?: Map<string, Omit<Gap, 'text'>>
+  /** Dateien, die gerade per `source` mitgelesen werden (gegen Schleifen). */
+  srcs?: string[]
 }
 
 /** Ein ausgewerteter Wortwert. `glob`: enthält unquotierte Platzhalter. */
@@ -96,7 +109,16 @@ export const fork = (st: State): State => ({
   pipe: st.pipe,
   alts: st.alts ? [...st.alts] : undefined,
   why: st.why ? new Map(st.why) : undefined,
+  srcs: st.srcs,
 })
+
+/** Befunde aus einem mitgelesenen Skript übernehmen, mit dessen Namen davor. */
+export function mergeOut(out: Out, sub: Out, prefix: string): void {
+  out.targets.push(...sub.targets.map(t => ({ ...t, via: `${prefix}: ${t.via}` })))
+  out.unknowns.push(...sub.unknowns.map(u => `${prefix}: ${u}`))
+  ;(out.gaps ??= []).push(...(sub.gaps ?? []).map(g => ({ ...g, text: `${prefix}: ${g.text}` })))
+  out.scripts.push(...sub.scripts)
+}
 
 /** Eine Lücke melden: als Text für den Dialog und mit Ursache für KI und Lernprotokoll. */
 export function addGap(out: Out, gap: Gap): void {
@@ -238,8 +260,17 @@ const DELETE_API =
 const DYNAMIC_LOC =
   /expanduser|Path\.home|os\.environ|getenv|homedir|process\.env|\bENV\[|\$HOME|gettempdir|tmpdir|tempfile|os\.walk\(\s*['"]\//
 
+/**
+ * Lösch-Aufrufe anderer Sprachen, die in Python-Code nur als Text vorkommen
+ * können (ein Python-Skript, das eine .ts-Datei schreibt). Startet der Code
+ * selbst Programme oder führt er Text aus, könnte er doch laufen: dann zählt alles.
+ */
+const NOT_PYTHON = /\b(rm|unlink|rmdir)Sync\b|\bfs(\.promises)?\.rm\b|\bpromises\.rm\b|Deno\.remove|FileUtils\.(rm|remove)|File\.delete|Dir\.delete|::Delete\s*\(/g
+const PY_RUNS = /subprocess|os\.system|popen|os\.exec|os\.spawn|\bpty\.|\bexec\s*\(|\beval\s*\(|__import__|importlib|compile\s*\(/
+
 export function inlineCode(code: string, args: Val[], st: State, ctx: Ctx, out: Out, via: string): void {
-  if (!DELETE_API.test(code)) return
+  const own = /^(python|pypy|py$)/.test(via) && !PY_RUNS.test(code) ? code.replace(NOT_PYTHON, '') : code
+  if (!DELETE_API.test(own)) return
   if (DYNAMIC_LOC.test(code)) out.unknowns.push(`${via}: Löschcode mit berechneten Pfaden`)
   const lits: string[] = []
   for (const m of code.matchAll(/'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"/g)) {

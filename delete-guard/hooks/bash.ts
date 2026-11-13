@@ -5,7 +5,7 @@
 
 import {
   type Ctx, type Gap, type Out, type State, type Val, type Mode, type Run,
-  DELETE_CMDS, absolute, addGap, addTarget, decodeEncoded, fork, inlineCode, lang, moveTo, parentOf,
+  DELETE_CMDS, absolute, addGap, addTarget, baseName, decodeEncoded, fork, inlineCode, lang, mergeOut, moveTo, newOut, parentOf,
 } from './common'
 
 /**
@@ -224,12 +224,41 @@ function unescapedSlash(s: string): number {
 }
 
 /**
+ * Innerhalb von `${…}` trennt ein Leerzeichen keine Wörter (`${v// /-}`):
+ * freie Leerzeichen und Tabs maskieren, damit der Lexer sie wörtlich nimmt.
+ */
+function keepSpaces(s: string): string {
+  let r = ''
+  for (let j = 0; j < s.length; j++) {
+    const c = s[j] ?? ''
+    if (c === '\\') { r += c + (s[j + 1] ?? ''); j++; continue }
+    if (c === "'") { const e = s.indexOf("'", j + 1); const to = e < 0 ? s.length : e + 1; r += s.slice(j, to); j = to - 1; continue }
+    if (c === '"') {
+      let e = j + 1
+      for (; e < s.length && s[e] !== '"'; e++) if (s[e] === '\\') e++
+      r += s.slice(j, e + 1); j = e; continue
+    }
+    if (c === '$' && (s[j + 1] === '(' || s[j + 1] === '{')) {
+      const e = s[j + 1] === '(' ? balanced(s, j + 1) : balanced(s, j + 1, '{', '}')
+      r += s.slice(j, e); j = e - 1; continue
+    }
+    r += c === ' ' || c === '\t' ? `\\${c}` : c
+  }
+  return r
+}
+
+/**
  * Ein Muster oder Ersatztext innerhalb von `${…}` als Wort. Ein `_` davor,
  * damit ein führendes `#` nicht als Kommentar gilt; null, wo das Stück kein
  * einzelnes Wort ist (Leerzeichen, Operatoren).
  */
-function wordOf(src: string): Word | null {
-  if (src === '') return { parts: [], raw: '' }
+function wordOf(orig: string): Word | null {
+  if (orig === '') return { parts: [], raw: '' }
+  const src = keepSpaces(orig)
+  if (src !== orig) {
+    const w = wordOf(src)
+    return w && { ...w, raw: orig }
+  }
   if (src.startsWith('~')) {
     const toks = lex(src)
     const t = toks[0]
@@ -248,6 +277,8 @@ function paramPart(inner: string, q: boolean): Part {
   const src = `\${${inner}}`
   const dyn: Part = { t: 'dyn', what: src }
   if (/^([A-Za-z_]\w*|\d+|[@*#?$!-])$/.test(inner)) return { t: 'var', name: inner, q }
+  // `${BASH_SOURCE[0]}` ist dasselbe wie `$BASH_SOURCE`: die Datei, die gerade läuft.
+  if (inner === 'BASH_SOURCE[0]') return { t: 'var', name: 'BASH_SOURCE', q }
   const len = /^#([A-Za-z_]\w*|\d+)$/.exec(inner)
   if (len) return { t: 'var', name: len[1] ?? '', q, op: { k: 'len' }, src }
   const m = /^([A-Za-z_]\w*|\d+)(.+)$/s.exec(inner)
@@ -353,11 +384,25 @@ function braces(v: string): string[] | null {
 function expand(w: Word, st: State, ctx: Ctx): Val[] | null {
   // Zu viele Varianten (lange for-Listen, verschachtelte {a,b}) sind
   // „unbekannt“: abschneiden hieße, einen Teil der Ziele nicht zu prüfen.
-  let acc: Val[] = [{ s: '', glob: false }]
+  // `pick`: welche Fassung einer mehrwertigen Variablen (for-Schleife) diese
+  // Variante schon gewählt hat. Dieselbe Variable hat in einem Wort überall
+  // denselben Wert: `'$f' … '$f'` sind bei drei Werten drei Fassungen, nicht neun.
+  type Acc = Val & { pick?: Map<string, number> }
+  let acc: Acc[] = [{ s: '', glob: false }]
   let overflow = false
   const join = (alts: Val[]) => {
     if (acc.length * alts.length > MAX_VARIANTS) { overflow = true; return }
-    acc = acc.flatMap(a => alts.map(b => ({ s: a.s + b.s, glob: a.glob || b.glob })))
+    acc = acc.flatMap(a => alts.map(b => ({ s: a.s + b.s, glob: a.glob || b.glob, pick: a.pick })))
+  }
+  const joinVar = (name: string, alts: Val[]) => {
+    const next: Acc[] = []
+    for (const a of acc) {
+      const i = a.pick?.get(name)
+      const own = i === undefined ? alts.map((b, j) => [b, j] as const) : [[alts[i] ?? { s: '', glob: false }, i] as const]
+      for (const [b, j] of own) next.push({ s: a.s + b.s, glob: a.glob || b.glob, pick: i === undefined ? new Map(a.pick).set(name, j) : a.pick })
+      if (next.length > MAX_VARIANTS) { overflow = true; return }
+    }
+    acc = next
   }
   for (const p of w.parts) {
     if (overflow) return null
@@ -371,7 +416,10 @@ function expand(w: Word, st: State, ctx: Ctx): Val[] | null {
     } else if (p.t === 'var') {
       const v = varValue(p, st, ctx)
       if (!v) return null
-      join(v.map(x => ({ s: x.s, glob: x.glob || (!p.q && /[*?[]/.test(x.s)) })))
+      const alts = v.map(x => ({ s: x.s, glob: x.glob || (!p.q && /[*?[]/.test(x.s)) }))
+      // Fassung i des Ergebnisses gehört zu Fassung i der Variablen, außer bei `${v:+…}`.
+      if (alts.length > 1 && p.op?.k !== 'alt' && lookup(p.name, st, ctx)?.length === alts.length) joinVar(p.name, alts)
+      else join(alts)
     } else if (p.t === 'tilde') {
       if (p.user !== '' || !ctx.home) return null
       join([{ s: ctx.home, glob: false }])
@@ -381,7 +429,16 @@ function expand(w: Word, st: State, ctx: Ctx): Val[] | null {
       join([{ s: v, glob: false }])
     } else return null
   }
-  return overflow ? null : acc
+  if (overflow) return null
+  const vals = acc.map(a => ({ s: a.s, glob: a.glob }))
+  // Ein Wort, das nur aus einer freien Variablen besteht (`rm $F`), zerlegt
+  // Bash an Leerraum in mehrere Wörter: jedes davon zählt.
+  const only = w.parts.length === 1 ? w.parts[0] : undefined
+  if (only?.t === 'var' && !only.q && vals.some(x => /\s/.test(x.s))) {
+    const fields = vals.flatMap(x => (/\s/.test(x.s) ? x.s.trim().split(/\s+/).filter(Boolean).map(s => ({ s, glob: /[*?[]/.test(s) })) : [x]))
+    return fields.length > MAX_VARIANTS ? null : fields.length ? fields : [{ s: '', glob: false }]
+  }
+  return vals
 }
 
 type VarPart = Extract<Part, { t: 'var' }>
@@ -390,7 +447,12 @@ type VarPart = Extract<Part, { t: 'var' }>
 function varValue(p: VarPart, st: State, ctx: Ctx): Val[] | null {
   const base = lookup(p.name, st, ctx)
   const op = p.op
-  if (!op) return base ?? (p.def !== undefined ? [{ s: p.def, glob: false }] : null)
+  if (!op) {
+    if (base || p.def === undefined) return base
+    // Die Vorgabe ist selbst ein Wort (`${X:-$HOME/y}`): auswerten, nicht wörtlich nehmen.
+    const w = wordOf(p.def)
+    return w ? expand(w, st, ctx) : null
+  }
   if (!base) return null
   if (op.k === 'alt') {
     const alt = expand(op.word, st, ctx)
@@ -884,6 +946,43 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
   }
   if (name === 'popd') { moveTo(st, st.stack.length ? (st.stack.pop() ?? null) : null, cmd.after !== '&&'); return }
 
+  // `shift`, `set -- …`, `getopts` ändern $1, $2, …: was davor galt, gilt nicht mehr.
+  if (name === 'shift' || name === 'getopts' || name === 'set') {
+    let list: Val[] | null = null
+    if (name === 'set') {
+      const dd = args.findIndex(w => w.raw === '--')
+      const first = args[0]?.raw ?? ''
+      if (dd < 0 && (args.length === 0 || /^[-+]/.test(first))) return // set -e, set -o pipefail
+      list = []
+      for (const w of dd < 0 ? args : args.slice(dd + 1)) {
+        const v = expand(w, st, ctx)
+        // Nur eindeutige Wörter: mehrere Fassungen oder Platzhalter ergäben eine andere Zählung.
+        if (!v || v.length !== 1 || v[0]?.glob || w.parts.some(p => p.t === 'sub' || p.t === 'dyn')) { list = null; break }
+        list.push(...v)
+      }
+    }
+    const unknown = () => ({ kind: 'other' as const, construct: name, word: name })
+    const all = list
+    for (let n = 1; n <= 9; n++) setVar(st, String(n), all ? [all[n - 1] ?? { s: '', glob: false }] : null, unknown)
+    setVar(st, '@', all, unknown)
+    setVar(st, '*', all, unknown)
+    setVar(st, '#', all ? [{ s: String(all.length), glob: false }] : null, unknown)
+    return
+  }
+  // `trap 'Befehl' EXIT`: der Befehl läuft später, also zählt er.
+  if (name === 'trap') {
+    const rest = skipOpts(args, st, ctx, new Set())
+    const w = rest[0]
+    if (!w || rest.length < 2) return
+    const code = one(w, st, ctx)
+    if (code === null) {
+      const { why } = cause(w, st, ctx)
+      return void addGap(out, { text: `trap mit unbekanntem Inhalt: ${w.raw}`, kind: why.kind, construct: why.construct, word: w.raw })
+    }
+    if (code !== '' && code !== '-') analyzeIn(code, fork(st), run)
+    return
+  }
+
   // Pipeline-Eingabe (xargs): ihre Ziele zählen zu den Löschzielen.
   const piped = st.pipe
 
@@ -972,7 +1071,24 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
   if (name === 'source' || name === '.') {
     const p = one(args[0], st, ctx)
     const abs = p === null ? null : absolute(p, st.cwd, ctx, false)
-    if (abs) out.scripts.push({ path: abs, lang: 'bash' })
+    if (!abs) return
+    const text = ctx.files?.get(abs)
+    // Noch nicht gelesen (register.ts holt es nach und prüft dann erneut), mit
+    // eigenen Argumenten oder schon dabei: wie bisher nur vormerken.
+    if (text === undefined || args.length > 1 || st.srcs?.includes(abs)) return void out.scripts.push({ path: abs, lang: 'bash' })
+    // Mitlesen im selben Zustand: was die Datei setzt, gilt im Befehl danach.
+    out.scripts.push({ path: abs, lang: 'bash', done: true })
+    const had = st.vars.has('BASH_SOURCE')
+    const before = st.vars.get('BASH_SOURCE') ?? null
+    const srcs = st.srcs
+    st.vars.set('BASH_SOURCE', [{ s: abs, glob: false }])
+    st.srcs = [...(srcs ?? []), abs]
+    const sub = newOut()
+    analyzeIn(text, st, { ...run, out: sub })
+    st.srcs = srcs
+    if (had) st.vars.set('BASH_SOURCE', before)
+    else st.vars.delete('BASH_SOURCE')
+    mergeOut(out, sub, baseName(abs))
     return
   }
   // ./skript.sh direkt ausgeführt
@@ -1114,10 +1230,14 @@ function shellCmd(name: string, cmd: Cmd, args: Word[], st: State, run: Run): vo
   }
   const script = args[i]
   if (script) {
-    const p = one(script, st, ctx)
-    const abs = p === null ? null : absolute(p, st.cwd, ctx, false)
-    if (abs) out.scripts.push({ path: abs, lang: 'bash' })
-    else out.unknowns.push(`${name}: Skript nicht auflösbar`)
+    // In einer for-Schleife können es mehrere Skripte sein (`bash $S/$s.sh`): jedes zählt.
+    const paths = expand(script, st, ctx)
+    if (paths === null || paths.some(p => p.glob)) return void out.unknowns.push(`${name}: Skript nicht auflösbar`)
+    for (const p of paths) {
+      const abs = absolute(p.s, st.cwd, ctx, false)
+      if (abs) out.scripts.push({ path: abs, lang: 'bash' })
+      else out.unknowns.push(`${name}: Skript nicht auflösbar`)
+    }
     return
   }
   // Skript über stdin: Heredoc, Here-String oder Pipeline.
