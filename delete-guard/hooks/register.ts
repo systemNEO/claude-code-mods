@@ -1,6 +1,6 @@
 import type { EngineInterface, FsEntry, Register } from 'claude-code'
 import {
-  type Ctx, type Gap, type Lang, type Out, type State, type Target,
+  type Ctx, type Gap, type Lang, type Out, type ScriptRef, type State, type Target,
   absolute, addTarget, asSetting, baseName, canRemember, collapse, folderFor, isFree, isNewer, isWinPath, lang, mergeOut, newOut,
   ancestors, normalizeRoot, parentOf, resolveBoundary, resolveFolder, resolveFolders, splitFolders, within,
 } from './common'
@@ -40,19 +40,20 @@ async function context($: EngineInterface): Promise<{ ctx: Ctx; cwd: string }> {
   // Jeder Name ein Literal: so verlangt es $.env.get.
   const [HOME, USERPROFILE, TMPDIR, TEMP, TMP, APPDATA, LOCALAPPDATA, PROGRAMDATA, PROGRAMFILES, PROGRAMFILES86,
     SYSTEMROOT, WINDIR, SYSTEMDRIVE, PUBLIC, ALLUSERSPROFILE, ONEDRIVE, HOMEDRIVE, HOMEPATH, USER, USERNAME,
-    XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR] = await Promise.all([
+    XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR, WSL_DISTRO_NAME] = await Promise.all([
     $.env.get('HOME'), $.env.get('USERPROFILE'), $.env.get('TMPDIR'), $.env.get('TEMP'), $.env.get('TMP'),
     $.env.get('APPDATA'), $.env.get('LOCALAPPDATA'), $.env.get('PROGRAMDATA'), $.env.get('ProgramFiles'),
     $.env.get('ProgramFiles(x86)'), $.env.get('SystemRoot'), $.env.get('windir'), $.env.get('SystemDrive'),
     $.env.get('PUBLIC'), $.env.get('ALLUSERSPROFILE'), $.env.get('OneDrive'), $.env.get('HOMEDRIVE'),
     $.env.get('HOMEPATH'), $.env.get('USER'), $.env.get('USERNAME'), $.env.get('XDG_CONFIG_HOME'),
     $.env.get('XDG_DATA_HOME'), $.env.get('XDG_CACHE_HOME'), $.env.get('XDG_STATE_HOME'), $.env.get('XDG_RUNTIME_DIR'),
+    $.env.get('WSL_DISTRO_NAME'),
   ])
   const table: Record<string, string | undefined> = {
     HOME: HOME ?? (win ? USERPROFILE : undefined), USERPROFILE, TMPDIR, TEMP, TMP, APPDATA, LOCALAPPDATA,
     PROGRAMDATA, PROGRAMFILES, 'PROGRAMFILES(X86)': PROGRAMFILES86, SYSTEMROOT, WINDIR, SYSTEMDRIVE, PUBLIC,
     ALLUSERSPROFILE, ONEDRIVE, HOMEDRIVE, HOMEPATH, USER, USERNAME, XDG_CONFIG_HOME, XDG_DATA_HOME,
-    XDG_CACHE_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR,
+    XDG_CACHE_HOME, XDG_STATE_HOME, XDG_RUNTIME_DIR, WSL_DISTRO_NAME,
   }
   const root = normalizeRoot(rootRaw, { win })
   const base: Ctx = { root, win, home: null, env: n => table[win ? n.toUpperCase() : n] }
@@ -66,9 +67,17 @@ async function context($: EngineInterface): Promise<{ ctx: Ctx; cwd: string }> {
   return { ctx, cwd: absolute(cwdRaw, null, ctx, win) ?? root }
 }
 
-function analyze(src: string, which: Lang, cwd: string, ctx: Ctx, script?: string): Out {
+function analyze(src: string, which: Lang, cwd: string, ctx: Ctx, script?: string, args?: ScriptRef['args']): Out {
   const out = newOut()
   const st: State = { cwd, vars: new Map(), stack: [] }
+  if (args && which === 'bash') {
+    const empty = [{ s: '', glob: false }]
+    for (let n = 1; n <= 9; n++) st.vars.set(String(n), n <= args.length ? (args[n - 1] ?? null) : empty)
+    const all = args.some(a => a === null) ? null : args.flatMap(a => a ?? [])
+    st.vars.set('@', all)
+    st.vars.set('*', all)
+    st.vars.set('#', [{ s: String(args.length), glob: false }])
+  }
   if (script) for (const n of ['0', 'BASH_SOURCE', 'ps:pscommandpath']) st.vars.set(n, [{ s: script, glob: false }])
   if (script) st.vars.set('ps:psscriptroot', [{ s: parentOf(script), glob: false }])
   lang[which](src, st, { ctx, out, depth: 0 })
@@ -158,13 +167,13 @@ function followScripts(out: Out, loaded: ReadonlyMap<string, Loaded>, cwd: strin
     const l = loaded.get(s.path)
     if (!l?.print) continue
     if (!printed.has(s.path)) { printed.add(s.path); prints.push(l.print) }
-    const key = `${s.done ? 'd' : 'x'} ${s.path}`
+    const key = `${s.done ? 'd' : 'x'} ${s.path} ${JSON.stringify(s.args ?? null)}`
     if (seen.has(key)) continue
     seen.add(key)
     if (l.big) out.unknowns.push(`Skript zu groß zum Prüfen: ${s.path}`)
     // Per `source` schon mitgelesen: seine Befunde stehen bereits in `out`.
     if (l.text === undefined || s.done) continue
-    const sub = analyze(l.text, s.lang, cwd, ctx, s.path)
+    const sub = analyze(l.text, s.lang, cwd, ctx, s.path, s.args)
     sub.scripts.length = 0
     mergeOut(out, sub, baseName(s.path))
   }
@@ -541,7 +550,8 @@ async function pruneLearned($: EngineInterface): Promise<string[]> {
   const { ctx } = await context($)
   const gone: string[] = []
   for (const [k, e] of Object.entries(log)) {
-    const out = analyze(e.example, e.lang, e.cwd, ctx)
+    // Mit den Skripten des Beispiels, wie bei der echten Prüfung (source-Dateien zählen mit).
+    const { out } = await analyzeWithScripts($, e.example, e.lang, e.cwd, ctx)
     const still = gapsOf(out, [...new Set(out.unknowns)]).some(g => learnKey(g) === k)
     if (!still) { gone.push(e.construct); delete log[k] }
   }

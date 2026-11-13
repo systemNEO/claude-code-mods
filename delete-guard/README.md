@@ -403,7 +403,14 @@ whitespace as Bash does, and each part counts. A variable with several values
 (from a `for` list) has the same value everywhere within one word. `set -- …`
 sets `$1`, `$2` … when its words are unambiguous; after `shift`, `getopts` or
 an ambiguous `set --` they are unknown. The command of `trap '…' EXIT` is
-checked like any other.
+checked like any other. `$(mktemp)` and `$(mktemp -d)` count as a path in
+`$TMPDIR` (or `/tmp` when it is not set; the name stays `tmp.XXXXXXXXXX`),
+`$(mktemp dir/nameXXXXXX)` as that template; with `-p`, `-t`, `--tmpdir` or a
+`TMPDIR` set in the command it stays unknown. A script started with arguments
+(`bash x.sh a "$d"`, `./x.sh a`) is checked with them as `$1`, `$2` …, unless
+their count is not certain (unquoted values with whitespace, `$@`, wildcards).
+An assignment in front of a command (`X=$(…) cmd`) is skipped even when its
+value is unknown.
 
 Every other command runs as normal.
 

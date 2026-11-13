@@ -168,10 +168,10 @@ describe('cmd', () => {
 
 describe('Skripte', () => {
   test('bash skript.sh wird zum Nachlesen gemeldet', () => {
-    expect(check('bash scripts/clean.sh').scripts).toEqual([{ path: '/home/u/proj/scripts/clean.sh', lang: 'bash' }])
+    expect(check('bash scripts/clean.sh').scripts).toEqual([{ path: '/home/u/proj/scripts/clean.sh', lang: 'bash', args: [] }])
   })
   test('./x.sh ebenso', () => {
-    expect(check('./x.sh').scripts).toEqual([{ path: '/home/u/proj/x.sh', lang: 'bash' }])
+    expect(check('./x.sh').scripts).toEqual([{ path: '/home/u/proj/x.sh', lang: 'bash', args: [] }])
   })
   test('.\\x.ps1 in PowerShell', () => {
     expect(check('& .\\tools\\clean.ps1', 'ps', WIN).scripts).toEqual([{ path: 'C:/Users/u/proj/tools/clean.ps1', lang: 'ps' }])

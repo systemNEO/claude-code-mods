@@ -670,7 +670,50 @@ function evalSub(src: string, st: State, ctx: Ctx): string | null {
   if (cmds.length === 1 && n(a) === 'dirname') { const p = arg(a); return p && parentOf(p) }
   if (cmds.length === 1 && (n(a) === 'realpath' || n(a) === 'readlink')) return arg(a)
   if (cmds.length === 2 && n(a) === 'cd' && n(b) === 'pwd') return arg(a)
+  if (cmds.length === 1 && n(a) === 'mktemp') return mktempPath(words(a).slice(1), st, ctx)
   return null
+}
+
+/**
+ * `$(mktemp)`, `$(mktemp -d)`: der Name ist zufällig, der Ordner nicht. Ohne
+ * Vorlage liegt die Datei in $TMPDIR, sonst /tmp (GNU; macOS setzt TMPDIR
+ * selbst); mit Vorlage dort, wo die Vorlage hinzeigt. Der Name bleibt als
+ * `tmp.XXXXXXXXXX` stehen. Optionen, die den Ordner ändern (-p, -t,
+ * --tmpdir), und ein im Befehl gesetztes TMPDIR bleiben unbekannt.
+ */
+function mktempPath(args: Word[], st: State, ctx: Ctx): string | null {
+  if (ctx.win) return null
+  const templates: string[] = []
+  for (const w of args) {
+    const s = one(w, st, ctx)
+    if (s === null) return null
+    if (s.startsWith('-')) {
+      if (!/^(-[dqu]+|--directory|--quiet|--dry-run)$/.test(s)) return null
+    } else templates.push(s)
+  }
+  if (templates.length > 1) return null
+  const t = templates[0]
+  if (t !== undefined) return /XXX/.test(t) ? absolute(t, st.cwd, ctx, false) : null
+  if (st.vars.has('TMPDIR')) return null
+  return absolute(`${ctx.env('TMPDIR') || '/tmp'}/tmp.XXXXXXXXXX`, null, ctx, false)
+}
+
+/**
+ * Die Argumente eines gestarteten Skripts als $1, $2, …; undefined, wo die
+ * Zählung nicht feststeht (freie Variable mit Leerraum oder leer, `$@`,
+ * Platzhalter, unbekannter freier Wert).
+ */
+function scriptArgs(words: Word[], st: State, ctx: Ctx): (Val[] | null)[] | undefined {
+  const out: (Val[] | null)[] = []
+  for (const w of words) {
+    const free = w.parts.some(p => (p.t === 'var' && !p.q) || p.t === 'sub' || p.t === 'dyn')
+    if (w.parts.some(p => p.t === 'var' && (p.name === '@' || p.name === '*'))) return undefined
+    const v = expand(w, st, ctx)
+    if (v === null) { if (free) return undefined; out.push(null); continue }
+    if (v.some(x => x.glob) || (free && (v.some(x => x.s === '' || /\s/.test(x.s)) || w.parts.some(p => p.t === 'var' && !p.q && (lookup(p.name, st, ctx) ?? []).some(x => /\s/.test(x.s)))))) return undefined
+    out.push(v)
+  }
+  return out
 }
 
 const one = (w: Word | undefined, st: State, ctx: Ctx): string | null => {
@@ -821,7 +864,12 @@ function stripWrappers(words: Word[], st: State, ctx: Ctx): Word[] {
   let w = words
   for (let guard = 0; guard < 10 && w.length; guard++) {
     const first = one(w[0], st, ctx)
-    if (first === null) return w
+    if (first === null) {
+      // `X=$(…) befehl`: eine Zuweisung davor bleibt eine, auch wenn ihr Wert unbekannt ist.
+      const p0 = w[0]?.parts[0]
+      if (p0?.t === 'lit' && !p0.q && /^[A-Za-z_]\w*\+?=/.test(p0.v)) { w = w.slice(1); continue }
+      return w
+    }
     const n = nameOf(first)
     if (/^[A-Za-z_]\w*\+?=/.test(first) && w[0]?.parts[0]?.t === 'lit' && !w[0].parts[0].q) { w = w.slice(1); continue }
     if (['!', '{', '}', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', 'fi', 'done', 'esac'].includes(first)) { w = w.slice(1); continue }
@@ -1094,7 +1142,7 @@ function runCmd(cmd: Cmd, st: State, run: Run, words0: Word[] = cmd.words): void
   // ./skript.sh direkt ausgeführt
   if (/\.(sh|bash)$/.test(head) || (head.includes('/') && !head.startsWith('/usr/') && !head.startsWith('/bin/'))) {
     const abs = absolute(head, st.cwd, ctx, false)
-    if (abs && /\.(sh|bash)$/.test(abs)) out.scripts.push({ path: abs, lang: 'bash' })
+    if (abs && /\.(sh|bash)$/.test(abs)) out.scripts.push({ path: abs, lang: 'bash', args: scriptArgs(args, st, ctx) })
     if (abs && /\.ps1$/i.test(abs)) out.scripts.push({ path: abs, lang: 'ps' })
     if (abs && /\.(cmd|bat)$/i.test(abs)) out.scripts.push({ path: abs, lang: 'cmd' })
   }
@@ -1233,9 +1281,10 @@ function shellCmd(name: string, cmd: Cmd, args: Word[], st: State, run: Run): vo
     // In einer for-Schleife können es mehrere Skripte sein (`bash $S/$s.sh`): jedes zählt.
     const paths = expand(script, st, ctx)
     if (paths === null || paths.some(p => p.glob)) return void out.unknowns.push(`${name}: Skript nicht auflösbar`)
+    const rest = scriptArgs(args.slice(i + 1), st, ctx)
     for (const p of paths) {
       const abs = absolute(p.s, st.cwd, ctx, false)
-      if (abs) out.scripts.push({ path: abs, lang: 'bash' })
+      if (abs) out.scripts.push({ path: abs, lang: 'bash', args: rest })
       else out.unknowns.push(`${name}: Skript nicht auflösbar`)
     }
     return

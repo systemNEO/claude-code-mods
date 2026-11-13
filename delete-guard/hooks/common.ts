@@ -64,6 +64,8 @@ export type ScriptRef = {
   lang: Lang
   /** Schon an Ort und Stelle mitgelesen (`source`): nur noch der Fingerabdruck fehlt. */
   done?: boolean
+  /** Bei einem gestarteten Bash-Skript: seine Argumente ($1, $2, …; null = unbekannt). Fehlt, wenn die Zählung nicht feststeht. */
+  args?: (Val[] | null)[]
 }
 
 export type Lang = 'bash' | 'ps' | 'cmd'

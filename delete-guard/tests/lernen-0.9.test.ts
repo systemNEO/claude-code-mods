@@ -222,3 +222,72 @@ test('Modus umschreiben: ohne tool_use_id (reine Abfrage) bleibt es bei ask', { 
   engine(on)
   expect((await check$($, 'rm -rf "$(cat liste)"')).decision).toBe('ask')
 })
+
+// ---------------------------------------------------------------- 0.9.1
+
+describe('$(mktemp): der Ordner steht fest, nur der Name nicht', () => {
+  const TMP: Ctx = { ...LINUX, allowed: ['/tmp'] }
+  const inTmp = (src: string, paths: string[], ctx: Ctx = TMP) => test(`mktemp: ${src}`, () => {
+    const r = check(src, ctx)
+    expect(r.unknowns).toEqual([])
+    expect(r.outside).toEqual(paths)
+  })
+  inTmp('jar=$(mktemp); curl -c "$jar" x; rm -f "$jar"', ['/tmp/tmp.XXXXXXXXXX'])
+  inTmp('d=$(mktemp -d) && rm -rf "$d/sub"', ['/tmp/tmp.XXXXXXXXXX/sub'])
+  inTmp('f=$(mktemp /var/lib/app/fooXXXXXX); rm "$f"', ['/var/lib/app/fooXXXXXX'])
+  inTmp('f=$(mktemp); rm "$f"', ['/var/run/t/tmp.XXXXXXXXXX'], { ...LINUX, env: n => (n === 'TMPDIR' ? '/var/run/t' : undefined) })
+  free('f=$(mktemp outXXXXXX); rm "$f"')
+  // Der Ausweg über den Ordner: -p, -t, --tmpdir und ein im Befehl gesetztes TMPDIR bleiben unbekannt.
+  asks('f=$(mktemp -p /etc); rm "$f"')
+  asks('f=$(mktemp -t x.XXXXXX); rm "$f"')
+  asks('f=$(mktemp --tmpdir=/etc); rm "$f"')
+  asks('TMPDIR=/etc; f=$(mktemp); rm "$f"')
+  asks('f=$(mktemp "$UNBEKANNT/aXXXXXX"); rm "$f"')
+  asks('f=$(mktemp | head -1); rm "$f"')
+})
+
+describe('Zuweisung vor dem Befehl mit unbekanntem Wert', () => {
+  // Früher: „Befehl nicht auflösbar“, weil im Pfad zufällig „rm“ stand (the-rm-oschmiede).
+  free('CHROME_PATH=$(node -e "console.log(require(\'/x/thermoschmiede/p.js\').path())") timeout 240 lighthouse https://x.y --quiet')
+  outside('X=$(cat thermo) rm -rf /etc/x', ['/etc/x'])
+  asks('X=$(cat thermo) rm -rf "$UNBEKANNT"')
+  // Ein unbekannter Befehl, der nach Löschen aussieht, fragt weiter.
+  asks('$(cat thermo) -rf /etc/x')
+})
+
+const SCRIPT = '/home/u/proj/s.sh'
+const withScript = (text: string, extra: Record<string, string> = {}) => ({ files: { [SCRIPT]: text, ...extra } })
+
+test('Skript-Argumente: $1 des Skripts ist das Argument des Aufrufs', async ($, on) => {
+  engine(on, withScript('rm -rf "$1/cache"\n'))
+  expect((await check$($, 'bash s.sh build')).decision).toBe('allow')
+  const r = await check$($, 'bash s.sh /etc')
+  expect(r.decision).toBe('ask')
+  expect(r.reason).toContain('s.sh: rm: /etc/cache')
+})
+
+test('Skript-Argumente: jede Fassung aus einer Schleife, jeder Aufruf für sich', async ($, on) => {
+  engine(on, withScript('rm -rf "$2"\n'))
+  expect((await check$($, 'for d in a b; do bash s.sh x "$d"; done')).decision).toBe('allow')
+  const r = await check$($, './s.sh x out; ./s.sh x /etc/y')
+  expect(r.decision).toBe('ask')
+  expect(r.reason).toContain('/etc/y')
+})
+
+test('Skript-Argumente: steht die Zählung nicht fest, bleibt $1 unbekannt', async ($, on) => {
+  engine(on, withScript('rm -rf "$1"\n'))
+  for (const c of ['F="a /etc/x"; bash s.sh $F', 'bash s.sh $(cat liste)', 'bash s.sh *.txt', 'bash s.sh "$UNBEKANNT"'])
+    expect({ c, d: (await check$($, c)).decision }).toEqual({ c, d: 'ask' })
+})
+
+test('Skript-Argumente: Python-Code im Skript mit $1 ist vollständig', async ($, on) => {
+  engine(on, withScript('python3 -c "print($1 + $2)"\n'))
+  expect((await check$($, 'for d in 0.1 0.3; do bash s.sh 9.03 $d; done')).decision).toBe('allow')
+})
+
+test('Lernprotokoll: was über eine source-Datei jetzt auflösbar ist, wird beim Start gestrichen', async ($, on) => {
+  const example = 'source scripts/aliases.sh >/dev/null && bash "$ROOT/scripts/compose.sh" up -d'
+  const learn = { 'other|bash: Skript nicht auflösbar': { kind: 'other', construct: 'bash: Skript nicht auflösbar', lang: 'bash', cwd: '/home/u/proj', example, count: 7, first: 0, last: 0, ai: 'offen' } }
+  engine(on, { files: { '/home/u/proj/scripts/aliases.sh': ALIASES, '/home/u/proj/scripts/compose.sh': 'docker compose "$@"\n' }, store: { learn } })
+  expect((await check$($, example)).decision).toBe('allow')
+})
